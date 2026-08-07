@@ -122,7 +122,8 @@ test('a placement opens a visible Herdr pane that spawns the requested agent', a
     pluginId: 'agent-relay.herdr-bridge',
     projectDir: '/projects/chief',
     mode: 'drive',
-    logger: { log() {} },
+    logger: { log() {}, warn() {} },
+    listAgents: async () => [{ name: 'scout', current_state: 'working' }],
     request: async (socketPath, method, params) => {
       requests.push({ method, params });
       return method === 'plugin.pane.open' ? paneResponse('pane-7') : {};
@@ -161,32 +162,139 @@ test('a placement opens a visible Herdr pane that spawns the requested agent', a
     capability: 'spawn:claude',
     pane_id: 'pane-7',
     cwd: '/projects/chief',
+    projectDir: '/projects/chief',
     surface: 'herdr-pane',
   });
 });
 
-test('an explicit cli and cwd in the placement input win over the capability default', async () => {
+test('an explicit cli in the placement input wins over the capability default', async () => {
   const requests = [];
   const handler = createPaneSpawnHandler({
     socketPath: '/tmp/herdr.sock',
     pluginId: 'p',
     projectDir: '/projects/chief',
     mode: 'view',
-    logger: { log() {} },
+    logger: { log() {}, warn() {} },
+    listAgents: async () => [{ name: 'probe' }],
     request: async (_socket, method, params) => {
       requests.push({ method, params });
       return paneResponse();
     },
   });
   const result = await handler(
-    { agent: 'probe', cli: 'codex', cwd: '/projects/relay', channels: ['general', 'fleet'] },
+    { agent: 'probe', cli: 'codex', channels: ['general', 'fleet'] },
     'spawn:claude'
   );
   const open = requests[0].params;
   assert.equal(open.env.HERDR_RELAY_SPAWN_CLI, 'codex');
-  assert.equal(open.cwd, '/projects/relay');
   assert.equal(open.env.HERDR_RELAY_SPAWN_CHANNELS, 'general,fleet');
   assert.equal(result.agent, 'probe');
+});
+
+// --- PR #2 review remediation -------------------------------------------------
+// These three assert the defects codex/cubic found. Each was verified RED against
+// the pre-fix implementation before the fix landed.
+
+test('a placement is not acknowledged until the broker has actually created the agent', async () => {
+  const methods = [];
+  const handler = createPaneSpawnHandler({
+    socketPath: '/tmp/herdr.sock',
+    pluginId: 'p',
+    projectDir: '/projects/chief',
+    mode: 'drive',
+    logger: { log() {}, warn() {} },
+    // The pane opens, but `agent-relay node agent new` never succeeds, so the
+    // agent never appears on the broker.
+    listAgents: async () => [],
+    creationTimeoutMs: 60,
+    creationPollMs: 10,
+    request: async (_socket, method) => {
+      methods.push(method);
+      return method === 'plugin.pane.open' ? paneResponse('pane-9') : {};
+    },
+  });
+
+  await assert.rejects(
+    handler({ name: 'ghost' }, 'spawn:claude'),
+    /ghost.*never appeared on the broker/,
+    'a placement whose agent was never created must not resolve as a spawned agent'
+  );
+  assert.equal(
+    methods.includes('pane.close'),
+    true,
+    'closes the pane it opened rather than leaving an orphan behind'
+  );
+});
+
+test('broker operations stay pinned to the registered project when a placement asks for another cwd', async () => {
+  const opened = [];
+  const polled = [];
+  const handler = createPaneSpawnHandler({
+    socketPath: '/tmp/herdr.sock',
+    pluginId: 'p',
+    projectDir: '/projects/chief',
+    mode: 'drive',
+    logger: { log() {}, warn() {} },
+    listAgents: async (dir) => {
+      polled.push(dir);
+      return [{ name: 'probe' }];
+    },
+    request: async (_socket, method, params) => {
+      if (method === 'plugin.pane.open') {
+        opened.push(params);
+        return paneResponse('pane-3');
+      }
+      return {};
+    },
+  });
+
+  const result = await handler({ name: 'probe', cwd: '/projects/relay' }, 'spawn:claude');
+
+  assert.equal(
+    opened[0].cwd,
+    '/projects/chief',
+    'the pane runs in the project whose broker registered this provider, not the requested cwd'
+  );
+  assert.equal(
+    opened[0].env.HERDR_RELAY_SPAWN_CWD,
+    '/projects/relay',
+    'the requested working directory travels separately, for the agent rather than for broker discovery'
+  );
+  assert.deepEqual(
+    [...new Set(polled)],
+    ['/projects/chief'],
+    'the broker is only ever polled in the registered project'
+  );
+  assert.equal(result.cwd, '/projects/relay', 'reports where the agent works');
+  assert.equal(result.projectDir, '/projects/chief', 'reports which broker owns it');
+});
+
+test('a cosmetic rename failure does not fail a placement whose pane already opened', async () => {
+  const methods = [];
+  const warnings = [];
+  const handler = createPaneSpawnHandler({
+    socketPath: '/tmp/herdr.sock',
+    pluginId: 'p',
+    projectDir: '/projects/chief',
+    mode: 'drive',
+    logger: { log() {}, warn: (message) => warnings.push(message) },
+    listAgents: async () => [{ name: 'scout' }],
+    request: async (_socket, method) => {
+      methods.push(method);
+      if (method === 'pane.rename') throw new Error('Herdr API request failed');
+      return method === 'plugin.pane.open' ? paneResponse('pane-5') : {};
+    },
+  });
+
+  const result = await handler({ name: 'scout' }, 'spawn:claude');
+
+  assert.equal(result.pane_id, 'pane-5', 'the placement still succeeds; the pane is creating the agent');
+  assert.equal(
+    methods.includes('pane.close'),
+    false,
+    'never tears down a pane that is already creating the agent over a cosmetic label'
+  );
+  assert.equal(warnings.length, 1, 'the rename failure is surfaced as a warning rather than swallowed');
 });
 
 test('a failed pane open surfaces the Herdr failure instead of reporting a phantom spawn', async () => {

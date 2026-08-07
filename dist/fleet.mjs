@@ -115,7 +115,7 @@ export function attachCommand({ agentName, mode, residentChief = false }) {
  * `--channels` is variadic, so it goes last: anything after it would be eaten as
  * a channel name.
  */
-export function spawnCommand({ cli, agentName, mode, task, model, channels }) {
+export function spawnCommand({ cli, agentName, mode, task, model, channels, cwd }) {
   const provider = typeof cli === 'string' ? cli.trim() : '';
   if (!provider) throw new Error('Spawning a Herdr pane agent requires a CLI provider');
   const name = typeof agentName === 'string' ? agentName.trim() : '';
@@ -124,6 +124,9 @@ export function spawnCommand({ cli, agentName, mode, task, model, channels }) {
   const args = ['node', 'agent', 'new', provider, '--name', name, '--mode', mode];
   if (typeof task === 'string' && task.trim()) args.push('--task', task);
   if (typeof model === 'string' && model.trim()) args.push('--model', model.trim());
+  // The agent's working directory, passed explicitly so the pane can keep its
+  // own cwd pinned to the project whose broker owns the agent.
+  if (typeof cwd === 'string' && cwd.trim()) args.push('--cwd', cwd.trim());
   const joinable = (channels ?? []).filter((channel) => typeof channel === 'string' && channel.trim());
   if (joinable.length) args.push('--channels', ...joinable.map((channel) => channel.trim()));
   return { command: 'agent-relay', args };

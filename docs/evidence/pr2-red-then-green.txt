@@ -1,0 +1,60 @@
+RED RUN — three PR #2 remediation assertions against UNFIXED code
+commit under test: c23978f31d6e5c99612b2653726a9e8e92f63948  (c23978f = PR #2 head, no fix applied)
+command: npm test
+---
+not ok 23 - a placement opens a visible Herdr pane that spawns the requested agent
+not ok 25 - a placement is not acknowledged until the broker has actually created the agent
+not ok 26 - broker operations stay pinned to the registered project when a placement asks for another cwd
+not ok 27 - a cosmetic rename failure does not fail a placement whose pane already opened
+# tests 45
+# pass 40
+# fail 4
+# skipped 1
+not ok 25 - a placement is not acknowledged until the broker has actually created the agent
+  ---
+  duration_ms: 0.32325
+  type: 'test'
+  location: '/Users/khaliqgant/Projects/AgentWorkforce/herdr-relay-bridge-worktrees/t4-herdr-fleet-node/test/fleet-node.test.mjs:198:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection: a placement whose agent was never created must not resolve as a spawned agent'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///Users/khaliqgant/Projects/AgentWorkforce/herdr-relay-bridge-worktrees/t4-herdr-fleet-node/test/fleet-node.test.mjs:217:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+
+===================================================================
+GREEN RUN — same three assertions after the fix
+command: npm test
+---
+ok 23 - a placement opens a visible Herdr pane that spawns the requested agent
+ok 25 - a placement is not acknowledged until the broker has actually created the agent
+ok 26 - broker operations stay pinned to the registered project when a placement asks for another cwd
+ok 27 - a cosmetic rename failure does not fail a placement whose pane already opened
+# tests 45
+# pass 44
+# fail 0
+# skipped 1
+
+===================================================================
+REVIEWER EXECUTION EVIDENCE — PR #2 head c23978f (base = codex/t3-chief-fleet-picker)
+---
+checks rollup as a reader sees it:
+  test (ubuntu-latest)        SUCCESS
+  test (macos-latest)         SUCCESS
+  test (windows-latest)       SUCCESS
+  cubic AI code reviewer      SUCCESS   output: 'AI review completed'
+  CodeRabbit                  SUCCESS   description: 'Review skipped: reviews are disabled for this base branch'
+
+=> All green. But CodeRabbit inspected ZERO lines of the diff.
+
+Reviewers that actually inspected the diff:
+  - chatgpt-codex-connector  3 inline comments (2 P1, 1 P2). No check run at all.
+  - cubic-dev-ai             1 inline comment (P2). Check run reports success.
+Reviewers that did NOT inspect the diff:
+  - CodeRabbit               skipped on non-default base; check still SUCCESS
+  - cursor bugbot            not enabled for the account; no check

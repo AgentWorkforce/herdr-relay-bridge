@@ -64,6 +64,9 @@ export async function runFleetAgent({
         mode,
         task: environment.HERDR_RELAY_SPAWN_TASK,
         model: environment.HERDR_RELAY_SPAWN_MODEL,
+        // The pane's own cwd stays the broker's project; the agent may be asked
+        // to work elsewhere.
+        cwd: environment.HERDR_RELAY_SPAWN_CWD,
         channels: environment.HERDR_RELAY_SPAWN_CHANNELS?.split(',') ?? [],
       })
     : attachCommand({

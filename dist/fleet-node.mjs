@@ -6,7 +6,13 @@ import { pathToFileURL } from 'node:url';
 import { action, defineNode, serveNode } from '@agent-relay/fleet';
 import { z } from 'zod';
 
-import { BrokerUnavailableError, attachMode, fleetProjectDir, openedPane } from './fleet.mjs';
+import {
+  BrokerUnavailableError,
+  attachMode,
+  fleetProjectDir,
+  listBrokerAgents,
+  openedPane,
+} from './fleet.mjs';
 import { requestHerdr } from './herdr-socket.mjs';
 
 /** Panes the node opens run the same entrypoint the picker uses. */
@@ -139,6 +145,51 @@ export async function readNodeIdentity({ url, apiKey }, { fetchImpl = fetch } = 
   return { nodeId, nodeName, nodeToken };
 }
 
+export const DEFAULT_CREATION_TIMEOUT_MS = 60_000;
+export const DEFAULT_CREATION_POLL_MS = 1_000;
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Block until the broker actually holds the agent the pane was asked to create.
+ *
+ * Opening a pane only starts `agent-relay node agent new` in it; creation can
+ * still fail afterwards (CLI missing, name taken, model rejected, broker down).
+ * Resolving the placement at pane-open time would report a spawned agent that
+ * does not exist, so the acknowledgement waits for the broker to confirm.
+ */
+export async function waitForBrokerAgent({
+  agentName,
+  projectDir,
+  listAgents,
+  timeoutMs = DEFAULT_CREATION_TIMEOUT_MS,
+  pollMs = DEFAULT_CREATION_POLL_MS,
+  sleep = delay,
+  now = () => Date.now(),
+}) {
+  const deadline = now() + timeoutMs;
+  let lastFailure;
+  for (;;) {
+    try {
+      const agents = await listAgents(projectDir);
+      if (agents.some((agent) => agent?.name === agentName)) return true;
+      lastFailure = undefined;
+    } catch (error) {
+      // A broker that cannot be queried is not proof the agent is absent; keep
+      // polling until the deadline, then report the query failure as the cause.
+      lastFailure = error;
+    }
+    if (now() >= deadline) {
+      throw new Error(
+        `${agentName} never appeared on the broker for ${projectDir} within ${timeoutMs}ms` +
+          (lastFailure ? `; the last broker query failed: ${lastFailure.message}` : ''),
+        lastFailure ? { cause: lastFailure } : undefined
+      );
+    }
+    await sleep(pollMs);
+  }
+}
+
 /**
  * Build the handler a placement invokes. It opens a real Herdr pane and lets the
  * pane's own projector report state, so `pane.report_agent` keeps exactly one
@@ -151,35 +202,81 @@ export function createPaneSpawnHandler({
   mode,
   request = requestHerdr,
   logger = console,
+  listAgents = listBrokerAgents,
+  creationTimeoutMs = DEFAULT_CREATION_TIMEOUT_MS,
+  creationPollMs = DEFAULT_CREATION_POLL_MS,
+  sleep = delay,
 }) {
   return async function spawnPane(input, capability) {
     const agentName = (input.name ?? input.agent).trim();
     const cli = (input.cli ?? capabilityCli(capability)).trim();
-    const cwd = input.cwd?.trim() || projectDir;
+    // Where the AGENT works. Distinct from projectDir, which selects the broker.
+    const agentCwd = input.cwd?.trim() || projectDir;
 
     // No workspace_id: the pane lands in the focused Herdr workspace, which is
     // what makes it visible to whoever is sitting in front of Herdr.
+    //
+    // The pane's own cwd is always projectDir. The pane discovers its broker
+    // from its working directory, so running it in a placement-supplied cwd
+    // would let it create the agent on a different project's broker — or none —
+    // while the placement claimed to target this node. A requested working
+    // directory travels as HERDR_RELAY_SPAWN_CWD and is applied to the agent.
     const response = await request(socketPath, 'plugin.pane.open', {
       plugin_id: pluginId,
       entrypoint: FLEET_AGENT_ENTRYPOINT,
       placement: 'tab',
-      cwd,
+      cwd: projectDir,
       focus: true,
       env: {
         HERDR_RELAY_AGENT_NAME: agentName,
         HERDR_RELAY_AGENT_LABEL: cli,
         HERDR_RELAY_ATTACH_MODE: mode,
         HERDR_RELAY_SPAWN_CLI: cli,
+        ...(agentCwd === projectDir ? {} : { HERDR_RELAY_SPAWN_CWD: agentCwd }),
         ...(input.task ? { HERDR_RELAY_SPAWN_TASK: input.task } : {}),
         ...(input.model ? { HERDR_RELAY_SPAWN_MODEL: input.model } : {}),
         ...(input.channels?.length ? { HERDR_RELAY_SPAWN_CHANNELS: input.channels.join(',') } : {}),
       },
     });
     const pane = openedPane(response);
-    await request(socketPath, 'pane.rename', { pane_id: pane.pane_id, label: agentName });
 
-    logger.log(`Opened Herdr pane ${pane.pane_id} spawning ${cli} agent "${agentName}" in ${cwd}.`);
-    return { agent: agentName, cli, capability, pane_id: pane.pane_id, cwd, surface: 'herdr-pane' };
+    // The label is cosmetic. Failing the placement on it would report a failure
+    // for a pane that is already creating the agent, and the caller's retry
+    // would open a duplicate pane or collide with the agent it just made.
+    try {
+      await request(socketPath, 'pane.rename', { pane_id: pane.pane_id, label: agentName });
+    } catch (error) {
+      logger.warn(`Could not label pane ${pane.pane_id} as "${agentName}": ${error.message}`);
+    }
+
+    try {
+      await waitForBrokerAgent({
+        agentName,
+        projectDir,
+        listAgents,
+        timeoutMs: creationTimeoutMs,
+        pollMs: creationPollMs,
+        sleep,
+      });
+    } catch (error) {
+      // Nothing was created, so leave no pane behind claiming otherwise.
+      await request(socketPath, 'pane.close', { pane_id: pane.pane_id }).catch(() => undefined);
+      throw error;
+    }
+
+    logger.log(
+      `Opened Herdr pane ${pane.pane_id} running ${cli} agent "${agentName}" in ${agentCwd} ` +
+        `on the broker for ${projectDir}.`
+    );
+    return {
+      agent: agentName,
+      cli,
+      capability,
+      pane_id: pane.pane_id,
+      cwd: agentCwd,
+      projectDir,
+      surface: 'herdr-pane',
+    };
   };
 }
 

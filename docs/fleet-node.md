@@ -26,6 +26,30 @@ what state it is in. The pane reports state through the same
 `createStatusProjector` / `pane.report_agent` path the picker uses, so a pane has
 exactly one writer for its agent state.
 
+### The acknowledgement waits for the broker
+
+Opening a pane only *starts* `node agent new` inside it. Creation can still fail
+afterwards — the CLI is missing, the name is taken, the model is rejected, the
+broker is unreachable. So the placement is not acknowledged when the pane opens;
+it is acknowledged when the broker confirms the agent exists. If the agent never
+appears within `creationTimeoutMs`, the handler closes the pane it opened and
+fails the placement, rather than reporting a spawned agent that does not exist.
+
+Two related rules fall out of the same principle — never report an effect you
+have not confirmed, and never fail in a way that invites a duplicate:
+
+- **Broker selection is pinned to the registered project.** A pane discovers its
+  broker from its own working directory, so the pane always runs in `projectDir`
+  — the project whose broker registered this provider. A placement that asks for
+  a different working directory gets it via `HERDR_RELAY_SPAWN_CWD`, applied to
+  the *agent* through `node agent new --cwd`. Without this split, a host running
+  several project-scoped brokers would create the agent on the wrong broker, or
+  none, while claiming to have targeted this node.
+- **The pane label is best-effort.** `pane.rename` is cosmetic. Failing a
+  placement because a label did not stick would report failure for a pane that is
+  already creating the agent, and the caller's retry would open a duplicate pane
+  or collide with the agent it just made. A rename failure warns and continues.
+
 ## Identity: a provider, not a new node
 
 This plugin does **not** enroll a node. It reads the local broker's
@@ -89,6 +113,48 @@ definition, and that tag is written onto the shared node record and **survives
 the provider detaching**. `chief-broker` still carries it. It clears the next
 time the broker re-registers; it is a stale label, not a live capability, and the
 definition no longer sets it.
+
+## A green check can mean a review that never ran
+
+Recorded here because it is a reusable trap, not a detail of one PR.
+
+PR #2 was opened against `codex/t3-chief-fleet-picker` rather than `main`, since
+it is stacked. Its checks rollup then read, in full:
+
+```
+test (ubuntu-latest)      SUCCESS
+test (macos-latest)       SUCCESS
+test (windows-latest)     SUCCESS
+cubic · AI code reviewer  SUCCESS    "AI review completed"
+CodeRabbit                SUCCESS    "Review skipped: reviews are disabled for this base branch"
+```
+
+Every check is green, and one of them is a reviewer that **inspected zero lines
+of the diff**. CodeRabbit disables auto review on any non-default base branch and
+reports that skip as a *success*, which is indistinguishable at a glance from a
+review that ran and found nothing.
+
+Who actually read the diff on #2:
+
+| Reviewer | Inspected the diff? | Evidence |
+|---|---|---|
+| `chatgpt-codex-connector` | **yes** | 3 inline comments (2 P1, 1 P2) — and it publishes no check run at all |
+| `cubic-dev-ai` | **yes** | 1 inline comment (P2); check run reports success |
+| CodeRabbit | **no** | skipped on non-default base; check still SUCCESS |
+| cursor bugbot | **no** | not enabled for the account; posts a comment, no check |
+
+Two lessons worth carrying:
+
+- **Treat reviewer execution as evidence to verify, not to assume.** Read the
+  check's *description*, not its colour. Ask which reviewers commented, and
+  reconcile that against which ones were expected.
+- **A stacked PR silently loses reviewers.** Basing on a non-default branch is
+  the right call for a dependent change, but it costs coverage that nothing
+  warns you about. When stacking, re-trigger the skipped reviewer explicitly.
+
+Codex is the inverse trap: it found both P1 defects here while publishing no
+check run whatsoever, so a rollup-only reading would have missed the reviewer
+that mattered most.
 
 ## Configuration
 
