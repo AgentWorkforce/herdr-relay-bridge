@@ -2,7 +2,7 @@ id = "agent-relay.herdr-bridge"
 name = "Agent Relay bridge"
 version = "0.1.0"
 min_herdr_version = "0.7.5"
-description = "Forward selected Herdr agent status changes to Agent Relay."
+description = "Bridge Herdr status to Agent Relay and open live broker agents as panes."
 platforms = ["linux", "macos", "windows"]
 
 [[build]]
@@ -20,3 +20,19 @@ id = "bridge"
 title = "Agent Relay bridge"
 placement = "tab"
 command = ["node", "dist/bridge.mjs"]
+
+[[panes]]
+id = "fleet"
+title = "Agent Relay fleet picker"
+description = "Open one attached Herdr pane per live agent in the current workspace's broker project."
+platforms = ["linux", "macos"]
+placement = "overlay"
+command = ["node", "dist/fleet-picker.mjs"]
+
+[[panes]]
+id = "fleet-agent"
+title = "Agent Relay agent"
+description = "Attach to a broker agent and project its authoritative state into Herdr."
+platforms = ["linux", "macos"]
+placement = "tab"
+command = ["sh", "-c", "exec node \"$HERDR_PLUGIN_ROOT/dist/fleet-agent.mjs\""]
