@@ -213,11 +213,9 @@ export function registerSessionSummaryAction(agent, socketPath, workspaceIds) {
   });
 }
 
-export function installStopHandlers(target, stop) {
-  target.once('SIGINT', stop);
-  target.once('SIGTERM', stop);
-  if (target.platform !== 'win32') target.once('SIGHUP', stop);
-}
+// Shared with the fleet node pane, which needs the same shutdown signals to
+// deregister its provider. Re-exported so this module's surface is unchanged.
+export { installStopHandlers } from './fleet.mjs';
 
 export async function startBridge({
   environment = process.env,

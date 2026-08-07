@@ -6,6 +6,7 @@ import {
   attachMode,
   createStatusProjector,
   listBrokerAgents,
+  spawnCommand,
 } from './fleet.mjs';
 import { requestHerdr } from './herdr-socket.mjs';
 
@@ -52,11 +53,27 @@ export async function runFleetAgent({
   });
 
   await projector.poll();
-  const invocation = attachCommand({
-    agentName,
-    mode,
-    residentChief: environment.HERDR_RELAY_RESIDENT_CHIEF === '1',
-  });
+  // A pane opened by the fleet node carries the CLI to create; a pane opened by
+  // the picker attaches to an agent the broker already runs. Both then share one
+  // projector, so the broker stays the single authority for reported state.
+  const spawnCli = environment.HERDR_RELAY_SPAWN_CLI?.trim();
+  const invocation = spawnCli
+    ? spawnCommand({
+        cli: spawnCli,
+        agentName,
+        mode,
+        task: environment.HERDR_RELAY_SPAWN_TASK,
+        model: environment.HERDR_RELAY_SPAWN_MODEL,
+        // The pane's own cwd stays the broker's project; the agent may be asked
+        // to work elsewhere.
+        cwd: environment.HERDR_RELAY_SPAWN_CWD,
+        channels: environment.HERDR_RELAY_SPAWN_CHANNELS?.split(',') ?? [],
+      })
+    : attachCommand({
+        agentName,
+        mode,
+        residentChief: environment.HERDR_RELAY_RESIDENT_CHIEF === '1',
+      });
   const child = spawnProcess(invocation.command, invocation.args, {
     cwd: projectDir,
     env: environment,
@@ -85,7 +102,9 @@ export async function runFleetAgent({
   try {
     const result = await waitForChild(child);
     if (result.code && result.code !== 0) {
-      throw new Error(`${agentName} attach exited with status ${result.code}`);
+      throw new Error(
+        `${agentName} ${spawnCli ? 'spawn' : 'attach'} exited with status ${result.code}`
+      );
     }
     return result;
   } finally {
