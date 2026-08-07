@@ -1,0 +1,22 @@
+{
+  "name": "herdr-relay-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Forward Herdr agent status changes to an Agent Relay channel.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/herdr-relay-bridge.git"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@agent-relay/sdk": "11.1.0",
+    "zod": "4.3.6"
+  }
+}
