@@ -74,3 +74,42 @@ GREEN (fix restored):
 NOTE: the ORIGINAL teardown check in this task asserted local process absence
 and PASSED while the provider was still registered and intercepting.
 Process absence is not a teardown signal.
+
+===================================================================
+EXACT-HEAD REVIEW (independent) — RED against 142c04b, unfixed
+commit under test: 142c04b60b2a5f62b98cf99c12c61979cc2bea02
+---
+not ok 2 - test/fleet-node.test.mjs
+# tests 30
+# pass 28
+# fail 1
+# skipped 1
+not ok 32 - a pre-existing agent of the same name is refused before any pane is opened
+not ok 33 - a colliding placement never acknowledges a herdr-pane surface
+not ok 34 - waits for an absent-to-present transition, not for a record it already saw
+not ok 38 - shutdown never claims a deregistration it cannot prove
+# tests 55
+# pass 50
+# fail 4
+# skipped 1
+
+GREEN — after the exact-head review fixes
+not ok 23 - a placement opens a visible Herdr pane that spawns the requested agent
+not ok 24 - an explicit cli in the placement input wins over the capability default
+not ok 26 - broker operations stay pinned to the registered project when a placement asks for another cwd
+not ok 27 - a cosmetic rename failure does not fail a placement whose pane already opened
+not ok 28 - a failed pane open surfaces the Herdr failure instead of reporting a phantom spawn
+# tests 55
+# pass 49
+# fail 5
+# skipped 1
+  # tests 55 / pass 54 / fail 0 / skipped 1
+
+NOTE on the RED run above: agentIdentity + an IGNORED knownIdentities param were
+added first so the suite could load; the presence-not-transition defect and the
+unconditional deregister log were both left intact, so the four failures are
+assertion-level, not import errors.
+
+Fixture correction found by these fixes: several pre-existing tests had the agent
+ALREADY present before the spawn — a state that cannot occur (it is a name
+collision). They now model absent->present via agentAppearsAfterSpawn().

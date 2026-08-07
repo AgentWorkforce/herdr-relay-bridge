@@ -13,6 +13,8 @@ import {
   readBrokerConnection,
   readNodeIdentity,
   runFleetNode,
+  waitForBrokerAgent,
+  agentIdentity,
 } from '../dist/fleet-node.mjs';
 
 const SESSION = {
@@ -31,6 +33,20 @@ const SESSION_IDENTITY = {
 
 function paneResponse(paneId = 'pane-1') {
   return { result: { plugin_pane: { pane: { pane_id: paneId } } } };
+}
+
+/**
+ * Models a real spawn: the broker does not hold the agent when the placement
+ * arrives, and holds it once the pane has run `node agent new`. The first call
+ * is the pre-spawn snapshot, so it must be empty — an agent already present
+ * would be a name collision, not a spawn.
+ */
+function agentAppearsAfterSpawn(name, { sessionId = 'session-new', onList } = {}) {
+  let calls = 0;
+  return async (dir) => {
+    onList?.(dir);
+    return calls++ === 0 ? [] : [{ name, sessionId, current_state: 'working' }];
+  };
 }
 
 test('serves the capability names the fleet already advertises, not a Herdr-specific one', () => {
@@ -123,7 +139,7 @@ test('a placement opens a visible Herdr pane that spawns the requested agent', a
     projectDir: '/projects/chief',
     mode: 'drive',
     logger: { log() {}, warn() {} },
-    listAgents: async () => [{ name: 'scout', current_state: 'working' }],
+    listAgents: agentAppearsAfterSpawn('scout'),
     request: async (socketPath, method, params) => {
       requests.push({ method, params });
       return method === 'plugin.pane.open' ? paneResponse('pane-7') : {};
@@ -175,7 +191,7 @@ test('an explicit cli in the placement input wins over the capability default', 
     projectDir: '/projects/chief',
     mode: 'view',
     logger: { log() {}, warn() {} },
-    listAgents: async () => [{ name: 'probe' }],
+    listAgents: agentAppearsAfterSpawn('probe'),
     request: async (_socket, method, params) => {
       requests.push({ method, params });
       return paneResponse();
@@ -235,10 +251,7 @@ test('broker operations stay pinned to the registered project when a placement a
     projectDir: '/projects/chief',
     mode: 'drive',
     logger: { log() {}, warn() {} },
-    listAgents: async (dir) => {
-      polled.push(dir);
-      return [{ name: 'probe' }];
-    },
+    listAgents: agentAppearsAfterSpawn('probe', { onList: (dir) => polled.push(dir) }),
     request: async (_socket, method, params) => {
       if (method === 'plugin.pane.open') {
         opened.push(params);
@@ -278,7 +291,7 @@ test('a cosmetic rename failure does not fail a placement whose pane already ope
     projectDir: '/projects/chief',
     mode: 'drive',
     logger: { log() {}, warn: (message) => warnings.push(message) },
-    listAgents: async () => [{ name: 'scout' }],
+    listAgents: agentAppearsAfterSpawn('scout'),
     request: async (_socket, method) => {
       methods.push(method);
       if (method === 'pane.rename') throw new Error('Herdr API request failed');
@@ -303,7 +316,8 @@ test('a failed pane open surfaces the Herdr failure instead of reporting a phant
     pluginId: 'p',
     projectDir: '/projects/chief',
     mode: 'drive',
-    logger: { log() {} },
+    logger: { log() {}, warn() {} },
+    listAgents: async () => [],
     request: async () => ({ result: {} }),
   });
   await assert.rejects(handler({ name: 'scout' }, 'spawn:claude'), /did not return the opened fleet pane/);
@@ -371,12 +385,131 @@ test('serving never renames the live node it attaches to', async () => {
   assert.deepEqual(Object.keys(options.definition.capabilities), ['spawn:claude', 'spawn:codex']);
 });
 
+// --- exact-head review: attributable creation, not mere presence --------------
+// Waiting for "an agent with this name" is not the same as waiting for "the agent
+// this placement created". If the name already exists, `node agent new` fails
+// precisely BECAUSE it is taken — and a presence check then reports success for
+// an agent the placement did not create, and may not even own.
+
+test('a pre-existing agent of the same name is refused before any pane is opened', async () => {
+  const methods = [];
+  const handler = createPaneSpawnHandler({
+    socketPath: '/tmp/herdr.sock',
+    pluginId: 'p',
+    projectDir: '/projects/chief',
+    mode: 'drive',
+    logger: { log() {}, warn() {} },
+    listAgents: async () => [{ name: 'scout', sessionId: 'session-already-here' }],
+    creationTimeoutMs: 60,
+    creationPollMs: 10,
+    request: async (_socket, method) => {
+      methods.push(method);
+      return method === 'plugin.pane.open' ? paneResponse('pane-x') : {};
+    },
+  });
+
+  await assert.rejects(
+    handler({ name: 'scout' }, 'spawn:claude'),
+    /already (running|exists)/i,
+    'a name collision must fail fast and readably, not be reported as a spawn'
+  );
+  assert.equal(
+    methods.includes('plugin.pane.open'),
+    false,
+    'refuses BEFORE opening a pane: a collision must not leave a stray pane behind'
+  );
+});
+
+test('a colliding placement never acknowledges a herdr-pane surface', async () => {
+  const handler = createPaneSpawnHandler({
+    socketPath: '/tmp/herdr.sock',
+    pluginId: 'p',
+    projectDir: '/projects/chief',
+    mode: 'drive',
+    logger: { log() {}, warn() {} },
+    listAgents: async () => [{ name: 'scout', sessionId: 's1' }],
+    creationTimeoutMs: 60,
+    creationPollMs: 10,
+    request: async (_socket, method) => (method === 'plugin.pane.open' ? paneResponse() : {}),
+  });
+
+  let acknowledged;
+  try {
+    acknowledged = await handler({ name: 'scout' }, 'spawn:claude');
+  } catch {
+    acknowledged = undefined;
+  }
+  assert.equal(
+    acknowledged?.surface,
+    undefined,
+    'a pre-existing name must never resolve as surface=herdr-pane'
+  );
+});
+
+test('waits for an absent-to-present transition, not for a record it already saw', async () => {
+  // The same record is returned forever. Its identity was already known, so it is
+  // not evidence that this placement created anything.
+  await assert.rejects(
+    waitForBrokerAgent({
+      agentName: 'scout',
+      projectDir: '/projects/chief',
+      listAgents: async () => [{ name: 'scout', sessionId: 'seen-before' }],
+      knownIdentities: new Set(['session:seen-before']),
+      timeoutMs: 50,
+      pollMs: 10,
+    }),
+    /never appeared on the broker/,
+    'a record present in the pre-spawn snapshot must not satisfy the wait'
+  );
+
+  // A different identity under the same name IS a new agent.
+  assert.equal(
+    await waitForBrokerAgent({
+      agentName: 'scout',
+      projectDir: '/projects/chief',
+      listAgents: async () => [{ name: 'scout', sessionId: 'brand-new' }],
+      knownIdentities: new Set(['session:seen-before']),
+      timeoutMs: 50,
+      pollMs: 10,
+    }),
+    true
+  );
+});
+
+test('agent identity prefers the stable sessionId over the name', () => {
+  assert.equal(agentIdentity({ name: 'scout', sessionId: 'abc' }), 'session:abc');
+  assert.equal(agentIdentity({ name: 'scout' }), 'name:scout');
+});
+
 // --- provider lifecycle: teardown must reach the control plane ----------------
 // A provider registration is control-plane state that outlives this process.
 // Killing the pane strands it, and every later placement for its capabilities is
 // answered "Provider ... is offline" until someone deregisters it. This happened
 // in production: the local process WAS gone and the registration was still live,
 // so process absence is exactly the wrong thing to assert on.
+
+// WHY THESE FAKES ARE ONLY A PROXY, and what makes the proxy sound.
+//
+// These tests cannot observe the `node.deregister` websocket frame — the fake
+// stands in for NodeProviderClient and no socket exists. What they DO assert is
+// the one thing this module controls: that Herdr's shutdown signals abort the
+// serve loop, and that runFleetNode does not resolve until serve settles.
+//
+// That is only meaningful because of a specific ordering inside the pinned
+// @agent-relay/fleet@11.4.2 → @relaycast/sdk stack. In `stop()`
+// (node-provider.js), the frame is sent at line 144 and `settleServe()` runs at
+// line 154 — deregister strictly precedes settlement, and serveNode's promise
+// settles via settleServe. So "serve has settled" implies "the frame was already
+// enqueued", and not exiting before serve settles is what prevents the process
+// from dying mid-flush. The fleet dependency is pinned exactly (11.4.2) because
+// that ordering is the evidence; a version that settled before sending would
+// invalidate these tests without failing them.
+//
+// The ordering is necessary but NOT sufficient: line 144 is gated on
+// `ws.readyState === 1 && this.registered && this.instanceId`, so a socket that
+// already dropped sends no frame while `stop()` still settles. That gap is
+// unobservable from here, which is exactly why the code must not log a claim of
+// deregistration — see the assertion below.
 
 function stopHandlerHarness() {
   const handlers = new Map();
@@ -472,6 +605,43 @@ test('the node pane does not exit until the deregister has flushed', async () =>
     'returned before the provider was deregistered: the process would exit leaving the registration live'
   );
   assert.equal(resolved, true);
+});
+
+test('shutdown never claims a deregistration it cannot prove', async () => {
+  const harness = stopHandlerHarness();
+  const logs = [];
+
+  // Models the dropped-socket path: stop() settles, but the gate at
+  // node-provider.js:143 means no `node.deregister` frame was ever sent. From
+  // here that is indistinguishable from a clean deregister — so the log must not
+  // assert one.
+  const run = runFleetNode({
+    environment: {
+      HERDR_SOCKET_PATH: '/s',
+      HERDR_PLUGIN_ID: 'p',
+      HERDR_RELAY_PROJECT_DIR: '/projects/chief',
+    },
+    readConnection: async () => ({ url: 'http://127.0.0.1:1', apiKey: 'k' }),
+    readIdentity: async () => SESSION_IDENTITY,
+    installHandlers: (target, stop) => installStopHandlers(target, stop),
+    stopTarget: harness.target,
+    logger: { log: (m) => logs.push(m), error: (m) => logs.push(m) },
+    serve: (options) =>
+      new Promise((resolve) => {
+        options.signal.addEventListener('abort', () => resolve(), { once: true });
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.raise('SIGTERM');
+  await run;
+
+  const claims = logs.filter((line) => /deregister/i.test(line));
+  assert.deepEqual(
+    claims,
+    [],
+    `logged a deregistration it cannot observe: ${JSON.stringify(claims)}`
+  );
 });
 
 test('the node pane refuses to serve without the Herdr context it needs', async () => {

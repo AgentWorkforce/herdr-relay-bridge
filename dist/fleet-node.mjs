@@ -159,10 +159,16 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * Resolving the placement at pane-open time would report a spawned agent that
  * does not exist, so the acknowledgement waits for the broker to confirm.
  */
+export function agentIdentity(agent) {
+  const sessionId = typeof agent?.sessionId === 'string' ? agent.sessionId.trim() : '';
+  return sessionId ? `session:${sessionId}` : `name:${agent?.name}`;
+}
+
 export async function waitForBrokerAgent({
   agentName,
   projectDir,
   listAgents,
+  knownIdentities,
   timeoutMs = DEFAULT_CREATION_TIMEOUT_MS,
   pollMs = DEFAULT_CREATION_POLL_MS,
   sleep = delay,
@@ -173,7 +179,12 @@ export async function waitForBrokerAgent({
   for (;;) {
     try {
       const agents = await listAgents(projectDir);
-      if (agents.some((agent) => agent?.name === agentName)) return true;
+      const match = agents.find((agent) => agent?.name === agentName);
+      // Presence is not creation. A record already in the pre-spawn snapshot is
+      // not evidence this placement produced anything — and `node agent new`
+      // fails precisely BECAUSE a name is taken, so the colliding record would
+      // otherwise be reported as this placement's success.
+      if (match && !knownIdentities?.has(agentIdentity(match))) return true;
       lastFailure = undefined;
     } catch (error) {
       // A broker that cannot be queried is not proof the agent is absent; keep
@@ -213,6 +224,20 @@ export function createPaneSpawnHandler({
     const cli = (input.cli ?? capabilityCli(capability)).trim();
     // Where the AGENT works. Distinct from projectDir, which selects the broker.
     const agentCwd = input.cwd?.trim() || projectDir;
+
+    // Snapshot BEFORE opening anything. Two jobs: refuse a name that is already
+    // taken, and record identities so the later wait can require an
+    // absent->present transition rather than mere presence.
+    const before = await listAgents(projectDir);
+    const collision = before.find((agent) => agent?.name === agentName);
+    if (collision) {
+      throw new Error(
+        `An agent named "${agentName}" is already running on the broker for ${projectDir}. ` +
+          'Release it first, or place this agent under a different name. ' +
+          'Spawning would fail on the name collision, and the existing agent is not this placement\'s to report.'
+      );
+    }
+    const knownIdentities = new Set(before.map(agentIdentity));
 
     // No workspace_id: the pane lands in the focused Herdr workspace, which is
     // what makes it visible to whoever is sitting in front of Herdr.
@@ -255,6 +280,7 @@ export function createPaneSpawnHandler({
         agentName,
         projectDir,
         listAgents,
+        knownIdentities,
         timeoutMs: creationTimeoutMs,
         pollMs: creationPollMs,
         sleep,
@@ -363,7 +389,12 @@ export async function runFleetNode({
     log: (message) => logger.log(message),
     warn: (message) => logger.error(message),
   });
-  logger.log(`Deregistered provider "${providerName}" from node "${identity.nodeName}".`);
+  // Deliberately does NOT claim a deregistration. serveNode settling proves the
+  // serve loop stopped, not that `node.deregister` was sent: the SDK gates that
+  // frame on the socket still being open and registered, then settles either
+  // way. Claiming it here would be a log that lies precisely when teardown
+  // failed — the case that caused an outage once already.
+  logger.log(`Stopped serving provider "${providerName}" on node "${identity.nodeName}".`);
 }
 
 export function isDirectEntrypoint(moduleUrl, argv1) {
