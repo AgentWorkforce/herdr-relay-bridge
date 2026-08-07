@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Forward Herdr agent status changes to an Agent Relay channel.",
+  "description": "Bridge Herdr status to Agent Relay and open live broker agents as panes.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

@@ -5,6 +5,10 @@ Make a [Herdr](https://herdr.dev) session a participating member of an
 forwarded into a Relay channel, and other agents in that workspace can query your
 fleet's live state through a typed `herdr.session_summary` action.
 
+The same plugin can also turn a project-scoped local Relay broker into a Herdr
+workspace: the fleet picker opens one attached pane per live broker agent and
+projects the broker's authoritative state onto each pane.
+
 This is a connector, not a notifier. If you want a push notification on your
 phone when an agent blocks, several plugins do that well — see
 [Related plugins](#related-plugins). Use this one when the thing that should
@@ -24,23 +28,32 @@ distinct members of the same workspace.
 
 ## What it does, and what it will not do
 
-Forwarded:
+The `bridge` entrypoint forwards:
 
 - `pane.agent_status_changed` for workspaces you explicitly allowlist
 - aggregate status counts, on request, via `herdr.session_summary`
 
-Never touched:
+The optional `fleet` entrypoint:
+
+- reads `agent-relay node agent list` from the active Herdr project's cwd
+- creates a `Relay fleet` workspace with one attached pane per live broker agent
+- reports broker `current_state` through Herdr's `pane.report_agent` API
+
+Never touched by the bridge entrypoint:
 
 - pane output, scrollback, working directory, environment, or terminal titles
 - prompts, keystrokes, shell commands, or raw socket control
 
-The bridge has no write path into your panes at all. It reads status metadata and
-session snapshots over Herdr's local API and nothing else.
+The bridge entrypoint has no write path into your panes. The fleet entrypoint is
+an explicit control surface: invoking it creates a workspace, launches local
+attach commands, and reports agent metadata, but it does not read scrollback or
+send prompts or keystrokes.
 
 ## Requirements
 
 - Herdr 0.7.5 or newer
 - Node 22 or newer
+- `agent-relay` with a running project-scoped local broker for the fleet picker
 
 No Agent Relay account, API key, or signup is needed to start — setup creates a
 free workspace for you.
@@ -114,6 +127,41 @@ herdr plugin pane open --plugin agent-relay.herdr-bridge --entrypoint bridge
 The bridge runs only while that pane is open — there is no startup hook. Closing
 the pane stops it and drains any in-flight deliveries first.
 
+## Open the local broker fleet
+
+The fleet entrypoints are available only on Linux and macOS; they cannot be
+opened on Windows.
+
+Focus the Chief project workspace in Herdr, then run one command:
+
+```sh
+herdr plugin pane open --plugin agent-relay.herdr-bridge --entrypoint fleet
+```
+
+The picker takes the project directory from the active Herdr workspace context,
+runs `agent-relay node agent list` there, and creates a new `Relay fleet`
+workspace. Every live broker agent gets its own tab, launched with that same cwd
+and attached in `drive` mode. To target a different project or attach read-only:
+
+```sh
+herdr plugin pane open --plugin agent-relay.herdr-bridge --entrypoint fleet \
+  --env HERDR_RELAY_PROJECT_DIR=/absolute/path/to/chief \
+  --env HERDR_RELAY_ATTACH_MODE=view
+```
+
+The resident chief-of-staff is launched through `scripts/chief.sh brain`, so the
+documented Chief bootstrap starts the broker and agent when needed. Other panes
+run `agent-relay node agent attach <name> --mode <mode>` directly.
+
+Each pane polls the broker every five seconds and reports only changed states.
+`idle` and `working` map directly, `blocked` and `blocked_on_send` map to
+`blocked`, and every other value (including `done`) maps to `unknown`; Herdr's
+pane state enum has no `done`. If the broker cannot be reached, the picker
+prints a short recovery message naming the project and the commands that can
+start it instead of surfacing the raw connection-file error. The failed picker
+pane stays open until you press Enter, so the recovery message does not
+disappear with the process.
+
 ## Querying from Relay
 
 Any agent in the workspace can call:
@@ -158,7 +206,7 @@ later start reclaims the lock only when its owner PID is gone; a live or
 unidentifiable owner fails closed.
 
 Herdr plugins run as your OS user and are not sandboxed. Review the manifest and
-`dist/` before installing — it is four small files.
+`dist/` before installing.
 
 ## Related plugins
 
