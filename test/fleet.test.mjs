@@ -62,20 +62,31 @@ test('lists agents project-scoped and replaces raw broker-down errors with a rea
 });
 
 test('fleet picker failure waits for dismissal when its pane is interactive', async () => {
-  // Injecting the dismissal keeps this assertion non-interactive while proving
-  // main does not immediately erase a readable failure pane.
   let dismissed = false;
+  const errors = [];
   const originalError = console.error;
   const originalExitCode = process.exitCode;
-  console.error = () => {};
+  console.error = (...parts) => errors.push(parts.join(' '));
   try {
     await fleetPickerMain({
+      pickerOptions: {
+        environment: {
+          HERDR_SOCKET_PATH: '/tmp/herdr.sock',
+          HERDR_PLUGIN_ID: 'agent-relay.herdr-bridge',
+          HERDR_RELAY_PROJECT_DIR: '/projects/chief',
+        },
+        listAgents: async (projectDir) => {
+          throw new BrokerUnavailableError(projectDir);
+        },
+      },
       dismiss: async () => {
         dismissed = true;
       },
     });
     assert.equal(dismissed, true);
     assert.equal(process.exitCode, 1);
+    assert.match(errors.join('\n'), /broker is unavailable for \/projects\/chief/);
+    assert.match(errors.join('\n'), /agent-relay node up/);
   } finally {
     console.error = originalError;
     process.exitCode = originalExitCode;
@@ -148,11 +159,10 @@ test('fleet picker opens exactly one Chief-cwd attach pane per live broker agent
   }
   assert.equal(opens[0].params.env.HERDR_RELAY_RESIDENT_CHIEF, '1');
   assert.equal(opens[1].params.env.HERDR_RELAY_RESIDENT_CHIEF, '0');
+  assert.ok(opens.every((open) => !('HERDR_RELAY_INITIAL_STATE' in open.params.env)));
 
   const reports = requests.filter((requestRecord) => requestRecord.method === 'pane.report_agent');
-  assert.deepEqual(reports.map((report) => report.params.state), ['working', 'blocked', 'idle']);
-  assert.ok(reports.every((report) => report.params.source === 'fleet-picker'));
-  assert.ok(reports.every((report) => !('done' === report.params.state)));
+  assert.equal(reports.length, 0, 'leaves the pane projector as the only status writer');
   assert.deepEqual(
     requests.find((requestRecord) => requestRecord.method === 'pane.close')?.params,
     { pane_id: 'w9:p1' }
@@ -161,6 +171,42 @@ test('fleet picker opens exactly one Chief-cwd attach pane per live broker agent
     requests.find((requestRecord) => requestRecord.method === 'workspace.focus')?.params,
     { workspace_id: 'w9' }
   );
+});
+
+test('fleet picker cannot overwrite a newer pane first-poll status', async () => {
+  const reports = [];
+  const request = async (_socketPath, method, params) => {
+    if (method === 'workspace.create') {
+      return {
+        result: {
+          workspace: { workspace_id: 'w9' },
+          root_pane: { pane_id: 'w9:p1' },
+        },
+      };
+    }
+    if (method === 'plugin.pane.open') {
+      // The pane process can complete its authoritative first poll before the
+      // open response reaches the picker.
+      reports.push('working');
+      return { result: { plugin_pane: { pane: { pane_id: 'w9:p2' } } } };
+    }
+    if (method === 'pane.report_agent') reports.push(params.state);
+    return { result: { type: 'ok' } };
+  };
+
+  await runFleetPicker({
+    environment: {
+      HERDR_SOCKET_PATH: '/tmp/herdr.sock',
+      HERDR_PLUGIN_ID: 'agent-relay.herdr-bridge',
+      HERDR_RELAY_PROJECT_DIR: '/projects/chief',
+    },
+    listAgents: async () => [{ name: 'worker', cli: 'codex', current_state: 'idle' }],
+    findChief: async () => undefined,
+    request,
+    logger: { log() {} },
+  });
+
+  assert.deepEqual(reports, ['working']);
 });
 
 test('status polling reports the initial projection once and then only broker changes', async () => {
@@ -281,4 +327,20 @@ test('manifest exposes the fleet picker and Chief-cwd attach entrypoints', async
   assert.match(manifest, /id = "fleet"/);
   assert.match(manifest, /id = "fleet-agent"/);
   assert.match(manifest, /HERDR_PLUGIN_ROOT\/dist\/fleet-agent\.mjs/);
+  assert.match(
+    manifest,
+    /id = "fleet"[\s\S]*?platforms = \["linux", "macos"\][\s\S]*?id = "fleet-agent"/
+  );
+  assert.match(manifest, /id = "fleet-agent"[\s\S]*?platforms = \["linux", "macos"\]/);
+});
+
+test('documents the Linux and macOS fleet limit next to the picker command', async () => {
+  const readme = await readFile(join(process.cwd(), 'README.md'), 'utf8');
+  assert.match(readme, /fleet entrypoints are available only on Linux and macOS/i);
+  assert.match(readme, /cannot be\s+opened on Windows/i);
+});
+
+test('documents both broker blocked states in the projection mapping', async () => {
+  const readme = await readFile(join(process.cwd(), 'README.md'), 'utf8');
+  assert.match(readme, /`blocked` and `blocked_on_send` map to\s+`blocked`/);
 });
