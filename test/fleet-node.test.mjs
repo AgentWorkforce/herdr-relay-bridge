@@ -497,6 +497,26 @@ test('wait rejects a record from the pre-spawn snapshot', async () => {
 
 });
 
+test('a final broker recheck preserves an agent that becomes visible at the timeout boundary', async () => {
+  let listCalls = 0;
+  let clockCalls = 0;
+  const found = await waitForBrokerAgent({
+    agentName: 'scout',
+    projectDir: '/projects/chief',
+    knownIdentities: new Set(),
+    timeoutMs: 50,
+    pollMs: 10,
+    now: () => (clockCalls++ === 0 ? 0 : 50),
+    listAgents: async () => {
+      listCalls += 1;
+      return listCalls === 1 ? [] : [{ name: 'scout', sessionId: 'created-at-boundary' }];
+    },
+  });
+
+  assert.equal(found, true, 'the final visibility check preserves the newly created agent');
+  assert.equal(listCalls, 2, 'checks once more before the handler can close the pane');
+});
+
 test('agent identity prefers the stable sessionId over the name', () => {
   assert.equal(agentIdentity({ name: 'scout', sessionId: 'abc' }), 'session:abc');
   assert.equal(agentIdentity({ name: 'scout' }), 'name:scout');

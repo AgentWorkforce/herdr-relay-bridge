@@ -37,7 +37,9 @@ it is acknowledged only after a matching name appears in a broker query. The
 handler rejects a name already present on the broker and serializes same-name
 placements through this provider, so one local placement cannot mistake another's
 new record for its own. If no matching record appears within `creationTimeoutMs`,
-the handler closes the pane it opened and fails the placement.
+the handler performs one final broker query before it closes the pane and fails
+the placement. A record that becomes visible at that boundary is preserved as a
+successful placement.
 
 `node agent new` exposes neither a caller-provided idempotency key nor the
 created session id to this plugin. Therefore an *out-of-band* concurrent creator

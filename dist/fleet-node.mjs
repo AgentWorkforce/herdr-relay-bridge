@@ -192,6 +192,17 @@ export async function waitForBrokerAgent({
       lastFailure = error;
     }
     if (now() >= deadline) {
+      // The preceding list can race broker visibility at the timeout boundary.
+      // Recheck once before closing the pane: a record that appears in this
+      // interval is a successful placement, not an orphan to tear down.
+      try {
+        const agents = await listAgents(projectDir);
+        const match = agents.find((agent) => agent?.name === agentName);
+        if (match && !knownIdentities?.has(agentIdentity(match))) return true;
+        lastFailure = undefined;
+      } catch (error) {
+        lastFailure = error;
+      }
       throw new Error(
         `${agentName} never appeared on the broker for ${projectDir} within ${timeoutMs}ms` +
           (lastFailure ? `; the last broker query failed: ${lastFailure.message}` : ''),
