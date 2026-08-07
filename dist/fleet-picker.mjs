@@ -2,11 +2,9 @@ import { pathToFileURL } from 'node:url';
 
 import {
   attachMode,
-  brokerStateMessage,
   chiefAgentName,
   fleetProjectDir,
   listBrokerAgents,
-  projectBrokerState,
   relayAgentLabel,
 } from './fleet.mjs';
 import { requestHerdr } from './herdr-socket.mjs';
@@ -60,7 +58,6 @@ export async function runFleetPicker({
   try {
     for (const agent of agents) {
       const label = relayAgentLabel(agent);
-      const initialState = projectBrokerState(agent.current_state);
       const response = await request(socketPath, 'plugin.pane.open', {
         plugin_id: pluginId,
         entrypoint: FLEET_AGENT_ENTRYPOINT,
@@ -72,20 +69,12 @@ export async function runFleetPicker({
           HERDR_RELAY_AGENT_NAME: agent.name,
           HERDR_RELAY_AGENT_LABEL: label,
           HERDR_RELAY_ATTACH_MODE: mode,
-          HERDR_RELAY_INITIAL_STATE: String(agent.current_state || ''),
           HERDR_RELAY_RESIDENT_CHIEF: agent.name === residentChief ? '1' : '0',
         },
       });
       const pane = openedPane(response);
       opened.push({ agent: agent.name, paneId: pane.pane_id });
 
-      await request(socketPath, 'pane.report_agent', {
-        pane_id: pane.pane_id,
-        source: 'fleet-picker',
-        agent: label,
-        state: initialState,
-        message: brokerStateMessage(agent.name, agent.current_state),
-      });
       await request(socketPath, 'pane.rename', { pane_id: pane.pane_id, label: agent.name });
     }
 
@@ -114,9 +103,9 @@ export function waitForDismiss(input = process.stdin, output = process.stdout) {
   return new Promise((resolve) => input.once('data', resolve));
 }
 
-export async function main({ dismiss = waitForDismiss } = {}) {
+export async function main({ dismiss = waitForDismiss, pickerOptions } = {}) {
   try {
-    await runFleetPicker();
+    await runFleetPicker(pickerOptions);
   } catch (error) {
     console.error(`Agent Relay fleet picker failed: ${error.message}`);
     process.exitCode = 1;

@@ -129,6 +129,9 @@ the pane stops it and drains any in-flight deliveries first.
 
 ## Open the local broker fleet
 
+The fleet entrypoints are available only on Linux and macOS; they cannot be
+opened on Windows.
+
 Focus the Chief project workspace in Herdr, then run one command:
 
 ```sh
@@ -151,12 +154,13 @@ documented Chief bootstrap starts the broker and agent when needed. Other panes
 run `agent-relay node agent attach <name> --mode <mode>` directly.
 
 Each pane polls the broker every five seconds and reports only changed states.
-`idle` and `working` map directly, `blocked_on_send` maps to `blocked`, and every
-other value (including `done`) maps to `unknown`; Herdr's pane state enum has no
-`done`. If the broker cannot be reached, the picker prints a short recovery
-message naming the project and the commands that can start it instead of
-surfacing the raw connection-file error. The failed picker pane stays open until
-you press Enter, so the recovery message does not disappear with the process.
+`idle` and `working` map directly, `blocked` and `blocked_on_send` map to
+`blocked`, and every other value (including `done`) maps to `unknown`; Herdr's
+pane state enum has no `done`. If the broker cannot be reached, the picker
+prints a short recovery message naming the project and the commands that can
+start it instead of surfacing the raw connection-file error. The failed picker
+pane stays open until you press Enter, so the recovery message does not
+disappear with the process.
 
 ## Querying from Relay
 
