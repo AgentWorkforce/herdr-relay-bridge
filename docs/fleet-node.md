@@ -68,6 +68,28 @@ adding a third overlapping record. Revisit this when that identity is sorted —
 at which point `nameOverride` becomes the enrolled Herdr node's own name and the
 shadowing behaviour above can be dropped.
 
+## Verified end to end
+
+Against a live `chief-broker` node (9 agents already placed on it, none
+disturbed):
+
+- A placement targeting the node for `spawn:claude` returned this provider's own
+  output — `{capability: "spawn:claude", pane_id: "w3:p3", surface: "herdr-pane"}`
+  — so the placement reached this handler rather than the broker's native spawn.
+- `herdr agent list` showed pane `w3:p3` running Claude Code in the Chief cwd,
+  and `agent-relay node agent list` showed the agent by name.
+- Process ancestry: Herdr server → `fleet-agent.mjs` → `agent-relay node agent
+  new` → the broker's agent PTY. The pane is the visible surface that creates and
+  drives the agent; the **broker owns the agent process**, which is precisely why
+  it appears in `node agent list` like any other agent. The pane is not a second
+  runtime.
+
+One residue worth knowing: an earlier revision set `tags: ['herdr']` on the node
+definition, and that tag is written onto the shared node record and **survives
+the provider detaching**. `chief-broker` still carries it. It clears the next
+time the broker re-registers; it is a stale label, not a live capability, and the
+definition no longer sets it.
+
 ## Configuration
 
 | Variable | Effect |

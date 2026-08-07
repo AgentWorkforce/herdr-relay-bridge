@@ -212,7 +212,11 @@ test('the node definition declares each capability and routes it to its own CLI'
     },
   });
   assert.deepEqual(Object.keys(definition.capabilities), ['spawn:claude', 'spawn:codex']);
-  assert.deepEqual(definition.tags, ['herdr']);
+  assert.equal(
+    definition.tags,
+    undefined,
+    'sets no tags: a node tag outlives the provider and would advertise a pane that has closed'
+  );
   assert.equal(definition.capabilities['spawn:codex'].metadata.cli, 'codex');
   assert.equal(definition.capabilities['spawn:codex'].metadata.surface, 'herdr-pane');
 

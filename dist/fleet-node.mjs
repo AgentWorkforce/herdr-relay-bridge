@@ -191,11 +191,14 @@ export function buildNodeDefinition({ providerName, capabilities, handler, maxAg
       (input) => handler(input, capability)
     );
   }
+  // Deliberately no tags. A tag set here is written onto the shared node record
+  // and survives the provider detaching, so the node would keep advertising
+  // "herdr" long after the pane that could serve it closed. The capability the
+  // provider registers is the honest signal: it disappears with the pane.
   return defineNode({
     name: providerName,
     capabilities: declared,
     ...(maxAgents === undefined ? {} : { maxAgents }),
-    tags: ['herdr'],
   });
 }
 
