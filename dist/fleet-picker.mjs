@@ -6,6 +6,7 @@ import {
   chiefAgentName,
   fleetProjectDir,
   listBrokerAgents,
+  openedPane,
   projectBrokerState,
   relayAgentLabel,
 } from './fleet.mjs';
@@ -21,12 +22,6 @@ function createdWorkspace(response) {
     throw new Error('Herdr did not return the created fleet workspace');
   }
   return { workspaceId: workspace.workspace_id, rootPaneId: rootPane.pane_id };
-}
-
-function openedPane(response) {
-  const pane = response?.result?.plugin_pane?.pane;
-  if (typeof pane?.pane_id !== 'string') throw new Error('Herdr did not return the opened fleet pane');
-  return pane;
 }
 
 export async function runFleetPicker({
