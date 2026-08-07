@@ -38,6 +38,14 @@ placement = "tab"
 command = ["sh", "-c", "exec node \"$HERDR_PLUGIN_ROOT/dist/fleet-node.mjs\""]
 
 [[panes]]
+id = "cloud"
+title = "Agent Relay cloud pane"
+description = "Warm a Daytona Cloud agent box and open its live broker terminal as a Herdr pane."
+platforms = ["linux", "macos"]
+placement = "overlay"
+command = ["node", "dist/cloud-picker.mjs"]
+
+[[panes]]
 id = "fleet-agent"
 title = "Agent Relay agent"
 description = "Attach to a broker agent and project its authoritative state into Herdr."

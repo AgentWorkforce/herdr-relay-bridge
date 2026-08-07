@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
+
 const ATTACH_MODES = new Set(['view', 'drive', 'passthrough']);
 
 function runCommand(command, args, options) {
@@ -49,6 +51,33 @@ export async function listBrokerAgents(projectDir, { run = runCommand } = {}) {
     throw new BrokerUnavailableError(projectDir, { cause: error });
   }
   return parseAgentList(result.stdout);
+}
+
+export function remoteBrokerConnection(environment = process.env) {
+  const url = environment.RELAY_BROKER_URL?.trim();
+  if (!url) return undefined;
+  const apiKey = environment.RELAY_BROKER_API_KEY?.trim();
+  return { url, ...(apiKey ? { apiKey } : {}) };
+}
+
+/**
+ * Cloud brokers have no project-local connection file. Query them through the
+ * same public harness-driver client Pear uses, keeping the broker key in memory
+ * and process environment rather than putting it in a command argument.
+ */
+export async function listRemoteBrokerAgents(
+  connection,
+  { createClient = (options) => new HarnessDriverClient(options) } = {}
+) {
+  const client = createClient({
+    baseUrl: connection.url,
+    ...(connection.apiKey ? { apiKey: connection.apiKey } : {}),
+  });
+  try {
+    return await client.listAgents();
+  } finally {
+    client.disconnect?.();
+  }
 }
 
 export function projectBrokerState(state) {

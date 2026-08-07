@@ -9,6 +9,10 @@ The same plugin can also turn a project-scoped local Relay broker into a Herdr
 workspace: the fleet picker opens one attached pane per live broker agent and
 projects the broker's authoritative state onto each pane.
 
+It can also warm an existing Agent Relay Cloud agent's Daytona box and attach
+its broker stream as a Herdr pane. The agent works in the box's live Relayfile
+mount; no repository clone or push is involved.
+
 This is a connector, not a notifier. If you want a push notification on your
 phone when an agent blocks, several plugins do that well — see
 [Related plugins](#related-plugins). Use this one when the thing that should
@@ -39,6 +43,14 @@ The optional `fleet` entrypoint:
 - creates a `Relay fleet` workspace with one attached pane per live broker agent
 - reports broker `current_state` through Herdr's `pane.report_agent` API
 
+The optional `cloud` entrypoint:
+
+- uses the existing non-interactive `agent-relay login` session
+- warms the selected Cloud agent box in Relayfile workspace mode
+- spawns or reuses one PTY agent in the box's `/workspace` live mount
+- opens that remote broker terminal through the same `fleet-agent` pane and
+  status projector used for local agents
+
 Never touched by the bridge entrypoint:
 
 - pane output, scrollback, working directory, environment, or terminal titles
@@ -54,6 +66,7 @@ send prompts or keystrokes.
 - Herdr 0.7.5 or newer
 - Node 22 or newer
 - `agent-relay` with a running project-scoped local broker for the fleet picker
+- an `agent-relay login` session and an active Cloud agent for the Cloud picker
 
 No Agent Relay account, API key, or signup is needed to start — setup creates a
 free workspace for you.
@@ -161,6 +174,40 @@ prints a short recovery message naming the project and the commands that can
 start it instead of surfacing the raw connection-file error. The failed picker
 pane stays open until you press Enter, so the recovery message does not
 disappear with the process.
+
+## Open a Cloud sandbox agent
+
+Sign in once, then open the Cloud picker:
+
+```sh
+agent-relay login
+herdr plugin pane open --plugin agent-relay.herdr-bridge --entrypoint cloud
+```
+
+If the active Cloud workspace has more than one configured Cloud agent, choose
+one by id or by coding harness:
+
+```sh
+herdr plugin pane open --plugin agent-relay.herdr-bridge --entrypoint cloud \
+  --env HERDR_RELAY_CLOUD_AGENT_ID=cloud-agent-id
+
+herdr plugin pane open --plugin agent-relay.herdr-bridge --entrypoint cloud \
+  --env HERDR_RELAY_CLOUD_HARNESS=claude
+```
+
+The picker calls Cloud's existing async `cloud-agents/{id}/box` endpoint with a
+Relayfile workspace source and `/workspace` mount, waits for the Daytona broker
+to become ready, and then reuses a broker agent with the stable derived name or
+spawns it once. `HERDR_RELAY_AGENT_NAME`, `HERDR_RELAY_SPAWN_TASK`,
+`HERDR_RELAY_SPAWN_CHANNELS`, and `HERDR_RELAY_ATTACH_MODE` are optional
+overrides. The pane is drivable by default.
+
+The Cloud access token is retained by the Cloud SDK. The Relayfile token in the
+box response is discarded because the sandbox mount daemon already owns it.
+Only the sandbox broker URL and key cross into the pane process environment;
+the key is never placed in process arguments or logs. Closing the Herdr pane
+does not stop the box, because it may also be attached by Pear or another
+client.
 
 ## Querying from Relay
 
