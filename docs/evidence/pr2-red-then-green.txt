@@ -58,3 +58,19 @@ Reviewers that actually inspected the diff:
 Reviewers that did NOT inspect the diff:
   - CodeRabbit               skipped on non-default base; check still SUCCESS
   - cursor bugbot            not enabled for the account; no check
+
+===================================================================
+TEARDOWN REGRESSION — RED against the pre-fix teardown, GREEN after
+Simulated pre-fix teardown: shutdown handlers not installed, and serve not
+awaited (process would exit before node.deregister flushes).
+---
+RED:
+  not ok 32 - Herdr shutdown signals reach the serve loop so the provider can deregister
+  not ok 33 - the node pane does not exit until the deregister has flushed
+  # tests 47 / pass 44 / fail 2
+GREEN (fix restored):
+  # tests 47 / pass 46 / fail 0
+
+NOTE: the ORIGINAL teardown check in this task asserted local process absence
+and PASSED while the provider was still registered and intercepting.
+Process absence is not a teardown signal.

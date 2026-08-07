@@ -10,6 +10,7 @@ import {
   BrokerUnavailableError,
   attachMode,
   fleetProjectDir,
+  installStopHandlers,
   listBrokerAgents,
   openedPane,
 } from './fleet.mjs';
@@ -290,8 +291,13 @@ export function buildNodeDefinition({ providerName, capabilities, handler, maxAg
   }
   // Deliberately no tags. A tag set here is written onto the shared node record
   // and survives the provider detaching, so the node would keep advertising
-  // "herdr" long after the pane that could serve it closed. The capability the
-  // provider registers is the honest signal: it disappears with the pane.
+  // "herdr" long after the pane that could serve it closed.
+  //
+  // Note the capability registration is NOT self-clearing either — that was an
+  // earlier and costly misreading. It survives the process too, and only a
+  // graceful stop deregisters it (see the teardown handling in runFleetNode).
+  // The difference is that a stranded capability can be deregistered, while a
+  // tag can only be overwritten by the record's owner.
   return defineNode({
     name: providerName,
     capabilities: declared,
@@ -307,6 +313,8 @@ export async function runFleetNode({
   readIdentity = readNodeIdentity,
   logger = console,
   signal,
+  installHandlers = installStopHandlers,
+  stopTarget = process,
 } = {}) {
   const socketPath = environment.HERDR_SOCKET_PATH;
   if (!socketPath) throw new Error('Herdr did not provide HERDR_SOCKET_PATH');
@@ -327,6 +335,21 @@ export async function runFleetNode({
       `for ${projectDir}. Placements targeting this node open Herdr panes.`
   );
 
+  // Teardown is not optional. A provider registration is control-plane state
+  // that OUTLIVES this process: killing the pane strands it, and every later
+  // placement for its capabilities is answered with "Provider ... is offline"
+  // until someone deregisters it. Only a graceful stop emits `node.deregister`,
+  // so Herdr's shutdown signals must reach the serve loop, and this function
+  // must not resolve until serve settles — returning early would let the process
+  // exit before the deregister frame flushes, which is the same stranded state.
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  installHandlers(stopTarget, stop);
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', stop, { once: true });
+  }
+
   await serve({
     definition,
     connection: { nodeToken: identity.nodeToken, nodeId: identity.nodeId },
@@ -336,10 +359,11 @@ export async function runFleetNode({
     nameOverride: identity.nodeName,
     providerName,
     reconnect: true,
-    ...(signal ? { signal } : {}),
+    signal: controller.signal,
     log: (message) => logger.log(message),
     warn: (message) => logger.error(message),
   });
+  logger.log(`Deregistered provider "${providerName}" from node "${identity.nodeName}".`);
 }
 
 export function isDirectEntrypoint(moduleUrl, argv1) {

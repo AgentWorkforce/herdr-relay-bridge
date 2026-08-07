@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { BrokerUnavailableError, spawnCommand } from '../dist/fleet.mjs';
+import { BrokerUnavailableError, installStopHandlers, spawnCommand } from '../dist/fleet.mjs';
 import { runFleetAgent } from '../dist/fleet-agent.mjs';
 import {
   DEFAULT_NODE_CAPABILITIES,
@@ -369,6 +369,109 @@ test('serving never renames the live node it attaches to', async () => {
   assert.equal(options.connection.nodeId, 'node_5b46ac5e');
   assert.equal(options.connection.nodeToken, 'nt-test-fixture-token');
   assert.deepEqual(Object.keys(options.definition.capabilities), ['spawn:claude', 'spawn:codex']);
+});
+
+// --- provider lifecycle: teardown must reach the control plane ----------------
+// A provider registration is control-plane state that outlives this process.
+// Killing the pane strands it, and every later placement for its capabilities is
+// answered "Provider ... is offline" until someone deregisters it. This happened
+// in production: the local process WAS gone and the registration was still live,
+// so process absence is exactly the wrong thing to assert on.
+
+function stopHandlerHarness() {
+  const handlers = new Map();
+  return {
+    target: { platform: 'darwin', once: (event, fn) => handlers.set(event, fn) },
+    raise: (event) => handlers.get(event)?.(),
+    events: () => [...handlers.keys()].sort(),
+  };
+}
+
+test('Herdr shutdown signals reach the serve loop so the provider can deregister', async () => {
+  const harness = stopHandlerHarness();
+  let served;
+  const run = runFleetNode({
+    environment: {
+      HERDR_SOCKET_PATH: '/s',
+      HERDR_PLUGIN_ID: 'p',
+      HERDR_RELAY_PROJECT_DIR: '/projects/chief',
+    },
+    readConnection: async () => ({ url: 'http://127.0.0.1:1', apiKey: 'k' }),
+    readIdentity: async () => SESSION_IDENTITY,
+    installHandlers: (target, stop) => installStopHandlers(target, stop),
+    stopTarget: harness.target,
+    logger: { log() {}, error() {} },
+    serve: (options) =>
+      new Promise((resolve) => {
+        served = options;
+        // Stand in for the SDK: settle only once the signal aborts, which is
+        // when NodeProviderClient.stop() sends its `node.deregister` frame.
+        options.signal.addEventListener('abort', () => resolve(), { once: true });
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    harness.events(),
+    ['SIGHUP', 'SIGINT', 'SIGTERM'],
+    'a pane closed by any of Herdr\'s shutdown signals must still deregister'
+  );
+  assert.ok(served.signal, 'serve is given a signal it can stop on');
+  assert.equal(served.signal.aborted, false, 'still serving before shutdown');
+
+  harness.raise('SIGHUP');
+  await run;
+  assert.equal(served.signal.aborted, true, 'the shutdown signal aborted the serve loop');
+});
+
+test('the node pane does not exit until the deregister has flushed', async () => {
+  const harness = stopHandlerHarness();
+  let deregistered = false;
+  let resolved = false;
+
+  const run = runFleetNode({
+    environment: {
+      HERDR_SOCKET_PATH: '/s',
+      HERDR_PLUGIN_ID: 'p',
+      HERDR_RELAY_PROJECT_DIR: '/projects/chief',
+    },
+    readConnection: async () => ({ url: 'http://127.0.0.1:1', apiKey: 'k' }),
+    readIdentity: async () => SESSION_IDENTITY,
+    installHandlers: (target, stop) => installStopHandlers(target, stop),
+    stopTarget: harness.target,
+    logger: { log() {}, error() {} },
+    serve: (options) =>
+      new Promise((resolve) => {
+        options.signal.addEventListener(
+          'abort',
+          () => {
+            // The real client drains in-flight invokes, then sends the frame.
+            setTimeout(() => {
+              deregistered = true;
+              resolve();
+            }, 20);
+          },
+          { once: true }
+        );
+      }),
+  }).then(() => {
+    resolved = true;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.raise('SIGTERM');
+  assert.equal(resolved, false, 'must not resolve the instant the signal arrives');
+  await run;
+
+  // The load-bearing assertion. Resolving before the frame flushes lets the
+  // process exit with the registration still live on the node — which reads as a
+  // clean teardown locally and strands every future placement.
+  assert.equal(
+    deregistered,
+    true,
+    'returned before the provider was deregistered: the process would exit leaving the registration live'
+  );
+  assert.equal(resolved, true);
 });
 
 test('the node pane refuses to serve without the Herdr context it needs', async () => {

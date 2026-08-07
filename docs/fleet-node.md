@@ -108,11 +108,79 @@ disturbed):
   it appears in `node agent list` like any other agent. The pane is not a second
   runtime.
 
-One residue worth knowing: an earlier revision set `tags: ['herdr']` on the node
-definition, and that tag is written onto the shared node record and **survives
-the provider detaching**. `chief-broker` still carries it. It clears the next
-time the broker re-registers; it is a stale label, not a live capability, and the
-definition no longer sets it.
+## Provider teardown, and how to remove a stranded provider
+
+**Read this before running the node pane.** A provider registration is
+control-plane state that outlives this process. It is not cleaned up by the
+process dying.
+
+This bit us in production. An earlier revision of this doc claimed a registered
+capability "disappears with the pane" and was therefore the *honest* signal
+compared to a sticky node tag. **That was wrong, and backwards.** What actually
+happened:
+
+- The node pane was closed. The process died. A teardown check confirmed zero
+  local processes — and passed.
+- The provider registration survived. Every subsequent `spawn:claude` placement
+  onto `chief-broker` was answered
+  `Provider "herdr-khaliqs-macbook-pro" is offline for action "spawn:claude"`,
+  blocking native spawning for the whole host.
+- Meanwhile the node tag — the residue flagged as the sticky one — had cleared on
+  its own when the broker re-registered.
+
+The capability was the sticky one. Killing the process is not teardown, because
+only a **graceful stop** emits `node.deregister`.
+
+### What the plugin now does
+
+`runFleetNode` installs `SIGINT`/`SIGTERM`/`SIGHUP` handlers that abort the serve
+loop, and does not return until `serveNode` settles — so the process cannot exit
+before the deregister frame flushes. Two assertions cover it, both verified to
+fail against the pre-fix teardown.
+
+### Removing a provider that is already stranded
+
+There is **no first-class CLI for this.** `agent-relay fleet` has no deregister
+command; `fleet release` releases an *agent*, not a provider. Cleanup requires
+reaching past the CLI into the SDK. The underlying primitive *is* first-class and
+supported — `NodeProviderClient.stop()` is documented as "Gracefully deregister
+the provider and close the connection" — but nothing operator-facing calls it.
+
+The supported call, composed from two documented SDK behaviours:
+
+1. `openSocket()` — "A fresh instance id per connection: reconnecting with a new
+   id replaces the previous attachment (the engine's reconnect-vs-duplicate
+   arbitration)." Re-attaching under the **same provider name** evicts the stale
+   attachment.
+2. `stop()` — sends `{ type: 'node.deregister', provider: { name, instance_id } }`.
+
+So: `serveNode` under the stranded provider's exact name, then abort its signal.
+
+**Prerequisites**
+
+- The local broker must be running; its `/api/session` supplies `node_id` and the
+  `nt_live_` node token.
+- `nameOverride` **must** be the broker's own node name. Anything else renames the
+  live node (see above).
+- Register a **harmless** capability, never `spawn:<cli>`. The replacement is
+  attached for a moment, and re-registering the contested capability would let it
+  intercept a placement that raced the cleanup.
+
+**Control-plane verification — do not trust the deregister return.** The frame
+being sent is not proof it took effect, and the public node record does not list
+providers: `agent-relay fleet nodes --all` and `query_nodes` show only deduped
+capabilities with kind `capacity`, in which a provider is invisible whether it is
+attached, stale, or gone. Verify on routing behaviour instead, which is the
+contract callers actually depend on:
+
+- Issue a real placement for the contested capability at the node.
+- It must not return `Provider ... is offline`.
+- Its output must be the **broker's** native shape (`{"name":…,"spawned":true}`),
+  not this plugin's (`{…, "pane_id":…, "surface":"herdr-pane"}`). Different shape,
+  different executor.
+- No Herdr pane and no `fleet-agent` process should exist.
+- Have the spawned agent reply, so you know it is live rather than merely
+  registered. Then release it.
 
 ## A green check can mean a review that never ran
 

@@ -143,6 +143,17 @@ export function openedPane(response) {
   return pane;
 }
 
+/**
+ * Run `stop` when Herdr takes the pane down. Herdr escalates pane shutdown
+ * quickly after SIGHUP, so anything a pane must do before dying — releasing a
+ * lock, deregistering a provider — has to hang off these.
+ */
+export function installStopHandlers(target, stop) {
+  target.once('SIGINT', stop);
+  target.once('SIGTERM', stop);
+  if (target.platform !== 'win32') target.once('SIGHUP', stop);
+}
+
 export function createStatusProjector({
   agentName,
   initialBrokerState,
