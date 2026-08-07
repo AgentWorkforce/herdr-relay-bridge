@@ -19,16 +19,16 @@ import {
 
 const SESSION = {
   node_id: 'node_5b46ac5e',
-  node_name: 'chief-broker',
-  node_token: 'nt-test-fixture-token',
+  node_name: 'broker-node',
+  node_token: 'test-node-token',
 };
 
 const okFetch = (body = SESSION) => async () => ({ ok: true, json: async () => body });
 
 const SESSION_IDENTITY = {
   nodeId: 'node_5b46ac5e',
-  nodeName: 'chief-broker',
-  nodeToken: 'nt-test-fixture-token',
+  nodeName: 'broker-node',
+  nodeToken: 'test-node-token',
 };
 
 function paneResponse(paneId = 'pane-1') {
@@ -64,7 +64,7 @@ test('rejects a capability that names no CLI instead of serving an unroutable na
 });
 
 test('derives a provider name distinct from the broker provider', () => {
-  assert.equal(herdrProviderName('Khaliqs-MacBook-Pro.local'), 'herdr-khaliqs-macbook-pro');
+  assert.equal(herdrProviderName('Local-Host-01.local'), 'herdr-local-host-01');
   assert.equal(herdrProviderName('build box 2'), 'herdr-build-box-2');
   assert.equal(herdrProviderName('...'), 'herdr-host');
 });
@@ -99,7 +99,7 @@ test('a malformed or incomplete connection file names the file rather than faili
 test('reads the node identity the broker registered as', async () => {
   const calls = [];
   const identity = await readNodeIdentity(
-    { url: 'http://127.0.0.1:54611', apiKey: 'br_key' },
+    { url: 'http://127.0.0.1:54611', apiKey: 'test-api-key' },
     {
       fetchImpl: async (url, init) => {
         calls.push({ url, init });
@@ -109,11 +109,11 @@ test('reads the node identity the broker registered as', async () => {
   );
   assert.deepEqual(identity, {
     nodeId: 'node_5b46ac5e',
-    nodeName: 'chief-broker',
-    nodeToken: 'nt-test-fixture-token',
+    nodeName: 'broker-node',
+    nodeToken: 'test-node-token',
   });
   assert.equal(calls[0].url, 'http://127.0.0.1:54611/api/session');
-  assert.equal(calls[0].init.headers.authorization, 'Bearer br_key');
+  assert.equal(calls[0].init.headers.authorization, 'Bearer test-api-key');
 });
 
 test('a broker with no node token fails closed with the fix, rather than serving nothing', async () => {
@@ -364,7 +364,7 @@ test('serving never renames the live node it attaches to', async () => {
       HERDR_PLUGIN_ID: 'agent-relay.herdr-bridge',
       HERDR_RELAY_PROJECT_DIR: '/projects/chief',
     },
-    readConnection: async () => ({ url: 'http://127.0.0.1:1', apiKey: 'br_key' }),
+    readConnection: async () => ({ url: 'http://127.0.0.1:1', apiKey: 'test-api-key' }),
     readIdentity: async () => SESSION_IDENTITY,
     serve: async (options) => {
       served.push(options);
@@ -375,13 +375,13 @@ test('serving never renames the live node it attaches to', async () => {
   const [options] = served;
   assert.equal(
     options.nameOverride,
-    'chief-broker',
+    'broker-node',
     'the node keeps the broker name; a rename would steal the node from its agents'
   );
   assert.equal(options.providerName, herdrProviderName());
   assert.notEqual(options.providerName, options.nameOverride, 'attaches as a second provider');
   assert.equal(options.connection.nodeId, 'node_5b46ac5e');
-  assert.equal(options.connection.nodeToken, 'nt-test-fixture-token');
+  assert.equal(options.connection.nodeToken, 'test-node-token');
   assert.deepEqual(Object.keys(options.definition.capabilities), ['spawn:claude', 'spawn:codex']);
 });
 
@@ -446,7 +446,40 @@ test('a colliding placement never acknowledges a herdr-pane surface', async () =
   );
 });
 
-test('waits for an absent-to-present transition, not for a record it already saw', async () => {
+test('a same-name placement already in flight is refused before a second pane opens', async () => {
+  const methods = [];
+  let listCalls = 0;
+  const handler = createPaneSpawnHandler({
+    socketPath: '/tmp/herdr.sock',
+    pluginId: 'p',
+    projectDir: '/projects/chief',
+    mode: 'drive',
+    logger: { log() {}, warn() {} },
+    listAgents: async () => {
+      listCalls += 1;
+      return listCalls === 1 ? [] : [{ name: 'scout', sessionId: 'created-by-first-placement' }];
+    },
+    request: async (_socket, method) => {
+      methods.push(method);
+      return method === 'plugin.pane.open' ? paneResponse('pane-first') : {};
+    },
+  });
+
+  const first = handler({ name: 'scout' }, 'spawn:claude');
+  await assert.rejects(
+    handler({ name: 'scout' }, 'spawn:claude'),
+    /already being created/,
+    'the second placement must not treat the first placement\'s broker record as its own'
+  );
+  await first;
+  assert.equal(
+    methods.filter((method) => method === 'plugin.pane.open').length,
+    1,
+    'only the first placement may open a pane for the in-flight name'
+  );
+});
+
+test('wait rejects a record from the pre-spawn snapshot', async () => {
   // The same record is returned forever. Its identity was already known, so it is
   // not evidence that this placement created anything.
   await assert.rejects(
@@ -462,18 +495,6 @@ test('waits for an absent-to-present transition, not for a record it already saw
     'a record present in the pre-spawn snapshot must not satisfy the wait'
   );
 
-  // A different identity under the same name IS a new agent.
-  assert.equal(
-    await waitForBrokerAgent({
-      agentName: 'scout',
-      projectDir: '/projects/chief',
-      listAgents: async () => [{ name: 'scout', sessionId: 'brand-new' }],
-      knownIdentities: new Set(['session:seen-before']),
-      timeoutMs: 50,
-      pollMs: 10,
-    }),
-    true
-  );
 });
 
 test('agent identity prefers the stable sessionId over the name', () => {

@@ -102,7 +102,7 @@ Copy `config.example.json` there as `agent-relay.json`:
 
 ```json
 {
-  "workspaceKey": "rk_live_replace_me",
+  "workspaceKey": "replace-with-workspace-key",
   "channel": "#agent-status",
   "workspaceIds": ["w1"]
 }

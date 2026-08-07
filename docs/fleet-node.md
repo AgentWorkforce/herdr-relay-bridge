@@ -10,7 +10,9 @@ herdr plugin pane open --plugin agent-relay.herdr-bridge --entrypoint fleet-node
 ```
 
 While that pane is open, the host answers `spawn:claude` and `spawn:codex`
-placements by opening a Herdr pane. Close the pane and the host stops answering.
+placements by opening a Herdr pane. Closing the pane starts graceful provider
+shutdown; see [provider teardown](#provider-teardown-and-how-to-remove-a-stranded-provider)
+for the failure path.
 
 ## How dispatch flows both ways
 
@@ -31,9 +33,18 @@ exactly one writer for its agent state.
 Opening a pane only *starts* `node agent new` inside it. Creation can still fail
 afterwards — the CLI is missing, the name is taken, the model is rejected, the
 broker is unreachable. So the placement is not acknowledged when the pane opens;
-it is acknowledged when the broker confirms the agent exists. If the agent never
-appears within `creationTimeoutMs`, the handler closes the pane it opened and
-fails the placement, rather than reporting a spawned agent that does not exist.
+it is acknowledged only after a matching name appears in a broker query. The
+handler rejects a name already present on the broker and serializes same-name
+placements through this provider, so one local placement cannot mistake another's
+new record for its own. If no matching record appears within `creationTimeoutMs`,
+the handler closes the pane it opened and fails the placement.
+
+`node agent new` exposes neither a caller-provided idempotency key nor the
+created session id to this plugin. Therefore an *out-of-band* concurrent creator
+using the same new name cannot be attributed by this bridge; operators must not
+run a competing same-name create while a fleet placement is in flight. Strict
+cross-client attribution requires a broker API that returns a placement-specific
+identity.
 
 Two related rules fall out of the same principle — never report an effect you
 have not confirmed, and never fail in a way that invites a duplicate:
@@ -62,8 +73,8 @@ under every agent already placed on it. `runFleetNode` pins
 `nameOverride` to the name the broker reports, and a test asserts it.
 
 The practical consequence: **Herdr-ness is carried by the capability, not by a
-separate node identity.** A placement targets the existing node (here,
-`chief-broker`) and asks for `spawn:claude`; this provider shadows that
+separate node identity.** A placement targets the existing broker node and asks
+for `spawn:claude`; this provider shadows that
 capability while the pane is open, so the agent is created as a Herdr pane
 rather than as a PTY child of the broker.
 
@@ -71,7 +82,8 @@ Two things follow, and both are deliberate:
 
 - The shadow is **host-wide and time-bounded**. While the node pane is open,
   *any* `spawn:claude` placement onto this node opens a Herdr pane, not only one
-  a human aimed at Herdr. Closing the pane restores the broker's native spawn.
+  a human aimed at Herdr. A connected graceful shutdown asks the provider to
+  deregister; after connection loss, use the stranded-provider procedure below.
 - The capability names are the ones the fleet **already advertises**. A
   Herdr-specific capability name would be unroutable by existing callers, and
   `workflow:run` is a different role entirely (it is the workflow capability and
@@ -86,21 +98,19 @@ would let a placement target a Herdr node by name instead of shadowing a
 capability on a shared one.
 
 It is **deliberately deferred**, not ruled out. Enrolling is an account-level
-action, and this machine already has an existing offline `kjg-laptop` identity;
-a second enrollment should be resolved against that identity first rather than
-adding a third overlapping record. Revisit this when that identity is sorted —
-at which point `nameOverride` becomes the enrolled Herdr node's own name and the
+action, and an existing offline node identity must be resolved before adding a
+second overlapping record. Revisit this when that identity is sorted — at which
+point `nameOverride` becomes the enrolled Herdr node's own name and the
 shadowing behaviour above can be dropped.
 
 ## Verified end to end
 
-Against a live `chief-broker` node (9 agents already placed on it, none
-disturbed):
+Against a live broker node with pre-existing agents, none disturbed:
 
 - A placement targeting the node for `spawn:claude` returned this provider's own
-  output — `{capability: "spawn:claude", pane_id: "w3:p3", surface: "herdr-pane"}`
+  output — `{capability: "spawn:claude", pane_id: "<pane-id>", surface: "herdr-pane"}`
   — so the placement reached this handler rather than the broker's native spawn.
-- `herdr agent list` showed pane `w3:p3` running Claude Code in the Chief cwd,
+- `herdr agent list` showed the pane running Claude Code in the requested cwd,
   and `agent-relay node agent list` showed the agent by name.
 - Process ancestry: Herdr server → `fleet-agent.mjs` → `agent-relay node agent
   new` → the broker's agent PTY. The pane is the visible surface that creates and
@@ -122,21 +132,23 @@ happened:
 - The node pane was closed. The process died. A teardown check confirmed zero
   local processes — and passed.
 - The provider registration survived. Every subsequent `spawn:claude` placement
-  onto `chief-broker` was answered
-  `Provider "herdr-khaliqs-macbook-pro" is offline for action "spawn:claude"`,
+  was answered `Provider "herdr-local-host" is offline for action "spawn:claude"`,
   blocking native spawning for the whole host.
 - Meanwhile the node tag — the residue flagged as the sticky one — had cleared on
   its own when the broker re-registered.
 
-The capability was the sticky one. Killing the process is not teardown, because
-only a **graceful stop** emits `node.deregister`.
+The capability was the sticky one. Killing the process is not teardown. A
+graceful stop only *attempts* `node.deregister`; it cannot deliver that frame
+after the socket has already failed, and no signal handler survives `SIGKILL`.
 
 ### What the plugin now does
 
 `runFleetNode` installs `SIGINT`/`SIGTERM`/`SIGHUP` handlers that abort the serve
-loop, and does not return until `serveNode` settles — so the process cannot exit
-before the deregister frame flushes. Two assertions cover it, both verified to
-fail against the pre-fix teardown.
+loop and waits for `serveNode` to settle. On a connected graceful shutdown this
+lets the fleet runtime attempt its deregistration before this entrypoint returns.
+It does **not** guarantee that the provider was removed: a lost socket or an
+untrappable termination can strand it. After either condition, use the procedure
+below and verify routing behaviour.
 
 ### Removing a provider that is already stranded
 
@@ -159,7 +171,7 @@ So: `serveNode` under the stranded provider's exact name, then abort its signal.
 **Prerequisites**
 
 - The local broker must be running; its `/api/session` supplies `node_id` and the
-  `nt_live_` node token.
+  node token.
 - `nameOverride` **must** be the broker's own node name. Anything else renames the
   live node (see above).
 - Register a **harmless** capability, never `spawn:<cli>`. The replacement is

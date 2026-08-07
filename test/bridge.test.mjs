@@ -84,19 +84,19 @@ test('derives a setup allowlist from the Herdr snapshot', () => {
     { workspaceId: 'w2', label: '' },
   ]);
 
-  const config = proposedConfig('rk_live_x', choices);
+  const config = proposedConfig('test-workspace-key', choices);
   assert.deepEqual(config.workspaceIds, ['w1', 'w2']);
   assert.equal(config.channel, '#agent-status');
 
   assert.throws(() => workspaceChoicesFrom({ result: {} }), /invalid session snapshot/);
   // An empty snapshot must not produce a config the loader would reject.
-  assert.throws(() => proposedConfig('rk_live_x', []), /invalid/);
+  assert.throws(() => proposedConfig('test-workspace-key', []), /invalid/);
 });
 
 test('setup writes a config the loader accepts, and refuses to clobber it', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'relay-setup-'));
   const written = await writeBridgeConfig(configDir, {
-    workspaceKey: 'rk_live_generated',
+    workspaceKey: 'test-generated-workspace-key',
     channel: '#agent-status',
     workspaceIds: ['w1'],
   });
@@ -106,7 +106,7 @@ test('setup writes a config the loader accepts, and refuses to clobber it', asyn
   }
   // The loader is strict about permissions; setup must not produce a file it rejects.
   const loaded = await loadBridgeConfig(configDir);
-  assert.equal(loaded.workspaceKey, 'rk_live_generated');
+  assert.equal(loaded.workspaceKey, 'test-generated-workspace-key');
 
   const logged = [];
   const result = await runSetup({
@@ -125,7 +125,7 @@ test('setup writes a config the loader accepts, and refuses to clobber it', asyn
 
   assert.equal(result.alreadyConfigured, true);
   assert.match(logged.join('\n'), /already configured/);
-  assert.equal((await loadBridgeConfig(configDir)).workspaceKey, 'rk_live_generated');
+  assert.equal((await loadBridgeConfig(configDir)).workspaceKey, 'test-generated-workspace-key');
 
   await rm(configDir, { recursive: true, force: true });
 });
@@ -236,7 +236,7 @@ async function writeConfig(configDir) {
   await mkdir(configDir, { recursive: true });
   await writeFile(
     join(configDir, 'agent-relay.json'),
-    JSON.stringify({ workspaceKey: 'rk_live_secret', channel: '#agent-status', workspaceIds: ['w1'] }),
+    JSON.stringify({ workspaceKey: 'test-workspace-key', channel: '#agent-status', workspaceIds: ['w1'] }),
     { mode: 0o600 }
   );
   if (process.platform !== 'win32') await chmod(join(configDir, 'agent-relay.json'), 0o600);
@@ -250,7 +250,7 @@ test('validates configuration and redacts workspace credentials', async () => {
     assert.equal(config.channel, '#agent-status');
     assert.equal(
       BridgeConfigSchema.safeParse({
-        workspaceKey: 'rk_live_secret',
+        workspaceKey: 'test-workspace-key',
         baseUrl: 'http://relay.example.com',
         channel: '#agent-status',
         workspaceIds: ['w1'],
@@ -259,7 +259,7 @@ test('validates configuration and redacts workspace credentials', async () => {
     );
     assert.equal(
       BridgeConfigSchema.safeParse({
-        workspaceKey: 'rk_live_secret',
+        workspaceKey: 'test-workspace-key',
         baseUrl: 'http://127.0.0.1:3000',
         channel: '#agent-status',
         workspaceIds: ['w1'],
@@ -268,7 +268,7 @@ test('validates configuration and redacts workspace credentials', async () => {
     );
     assert.equal(
       BridgeConfigSchema.safeParse({
-        workspaceKey: 'rk_live_secret',
+        workspaceKey: 'test-workspace-key',
         baseUrl: 'not-a-url',
         channel: '#agent-status',
         workspaceIds: ['w1'],
@@ -391,7 +391,7 @@ test('refreshes per-pane subscriptions without replaying historical lifecycle ev
     };
     class FakeRelay {
       constructor(options) {
-        assert.equal(options.workspaceKey, 'rk_live_secret');
+        assert.equal(options.workspaceKey, 'test-workspace-key');
         this.workspace = {
           register: async () => {
             registrations += 1;

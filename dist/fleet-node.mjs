@@ -219,11 +219,27 @@ export function createPaneSpawnHandler({
   creationPollMs = DEFAULT_CREATION_POLL_MS,
   sleep = delay,
 }) {
+  // `node agent new` has no request-id or caller-supplied session-id. Keep
+  // placements reaching this provider from racing each other for the same name
+  // during the list -> open-pane -> list interval; the broker would otherwise
+  // expose one placement's new record as evidence for the other.
+  const pendingAgentNames = new Set();
+
   return async function spawnPane(input, capability) {
     const agentName = (input.name ?? input.agent).trim();
     const cli = (input.cli ?? capabilityCli(capability)).trim();
     // Where the AGENT works. Distinct from projectDir, which selects the broker.
     const agentCwd = input.cwd?.trim() || projectDir;
+
+    if (pendingAgentNames.has(agentName)) {
+      throw new Error(
+        `A placement for agent "${agentName}" is already being created on the broker for ${projectDir}. ` +
+          'Wait for it to finish, or place this agent under a different name.'
+      );
+    }
+    pendingAgentNames.add(agentName);
+
+    try {
 
     // Snapshot BEFORE opening anything. Two jobs: refuse a name that is already
     // taken, and record identities so the later wait can require an
@@ -304,6 +320,9 @@ export function createPaneSpawnHandler({
       projectDir,
       surface: 'herdr-pane',
     };
+    } finally {
+      pendingAgentNames.delete(agentName);
+    }
   };
 }
 
