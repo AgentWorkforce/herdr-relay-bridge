@@ -183,6 +183,49 @@ test('spawns the Cloud agent in the live mount once, then reuses it', async () =
   assert.equal(disconnected, 2);
 });
 
+test('concurrent Cloud pickers converge on one broker agent', async () => {
+  const spawnCalls = [];
+  let agents = [];
+  let disconnected = 0;
+  const createClient = () => ({
+    getSession: async () => ({ mode: 'local' }),
+    listAgents: async () => agents,
+    spawnCli: (input) => new Promise((resolve, reject) => {
+      spawnCalls.push({ input, resolve, reject });
+      if (spawnCalls.length === 2) {
+        agents = [{ name: input.name, current_state: 'idle' }];
+        spawnCalls[0].resolve();
+        spawnCalls[1].reject(new Error('agent name already exists'));
+      }
+    }),
+    disconnect: () => {
+      disconnected += 1;
+    },
+  });
+  const input = {
+    box: {
+      sandboxId: 'sandbox-1',
+      status: 'ready',
+      execUrl: 'https://sandbox.example',
+      relayfileMountPath: '/workspace',
+    },
+    cloudAgent: CLOUD_AGENT,
+    agentName: 'cloud-reviewer',
+    createClient,
+  };
+
+  const results = await Promise.all([
+    ensureCloudBrokerAgent(input),
+    ensureCloudBrokerAgent(input),
+  ]);
+
+  assert.equal(spawnCalls.length, 2);
+  assert.equal(agents.length, 1);
+  assert.equal(results[0].name, 'cloud-reviewer');
+  assert.equal(results[1].name, 'cloud-reviewer');
+  assert.equal(disconnected, 2);
+});
+
 test('cloud picker opens the existing fleet-agent pane with credentials only in env', async () => {
   const requests = [];
   const prepared = {
@@ -277,4 +320,10 @@ test('manifest exposes a Cloud picker on the same platforms as fleet panes', asy
   assert.match(manifest, /id = "cloud"/);
   assert.match(manifest, /command = \["node", "dist\/cloud-picker\.mjs"\]/);
   assert.match(manifest, /id = "cloud"[\s\S]*?platforms = \["linux", "macos"\]/);
+});
+
+test('documents the Linux and macOS Cloud picker limit', async () => {
+  const readme = await readFile(join(process.cwd(), 'README.md'), 'utf8');
+  assert.match(readme, /Cloud picker is available only on Linux and macOS/i);
+  assert.match(readme, /cannot be opened on Windows/i);
 });

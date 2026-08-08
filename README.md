@@ -177,6 +177,9 @@ disappear with the process.
 
 ## Open a Cloud sandbox agent
 
+Like the fleet picker, the Cloud picker is available only on Linux and macOS;
+it cannot be opened on Windows.
+
 Sign in once, then open the Cloud picker:
 
 ```sh

@@ -191,19 +191,28 @@ export async function ensureCloudBrokerAgent({
     let agent = agents.find((candidate) => candidate.name === agentName);
     if (!agent) {
       const cli = requiredText(cloudAgent?.harness, 'a Cloud agent harness');
-      await client.spawnCli({
-        name: agentName,
-        cli,
-        transport: 'pty',
-        cwd: box.relayfileMountPath,
-        ...(typeof cloudAgent.defaultModel === 'string' && cloudAgent.defaultModel.trim()
-          ? { model: cloudAgent.defaultModel.trim() }
-          : {}),
-        ...(typeof task === 'string' && task.trim() ? { task: task.trim() } : {}),
-        ...(channels?.length ? { channels } : {}),
-      });
+      let spawnError;
+      try {
+        await client.spawnCli({
+          name: agentName,
+          cli,
+          transport: 'pty',
+          cwd: box.relayfileMountPath,
+          ...(typeof cloudAgent.defaultModel === 'string' && cloudAgent.defaultModel.trim()
+            ? { model: cloudAgent.defaultModel.trim() }
+            : {}),
+          ...(typeof task === 'string' && task.trim() ? { task: task.trim() } : {}),
+          ...(channels?.length ? { channels } : {}),
+        });
+      } catch (cause) {
+        // Another picker may have won the check-then-spawn race for this stable
+        // name. Re-list before surfacing the error so both pickers converge on
+        // the broker agent that now exists.
+        spawnError = cause;
+      }
       agents = await client.listAgents();
       agent = agents.find((candidate) => candidate.name === agentName);
+      if (!agent && spawnError) throw spawnError;
       if (!agent) throw new Error('Cloud broker did not report the agent it just spawned');
     }
     return agent;
