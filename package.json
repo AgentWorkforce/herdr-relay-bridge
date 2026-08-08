@@ -16,7 +16,9 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@agent-relay/cloud": "11.4.2",
     "@agent-relay/fleet": "11.4.2",
+    "@agent-relay/harness-driver": "11.4.2",
     "@agent-relay/sdk": "11.1.0",
     "zod": "4.3.6"
   }

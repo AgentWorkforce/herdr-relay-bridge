@@ -6,6 +6,8 @@ import {
   attachMode,
   createStatusProjector,
   listBrokerAgents,
+  listRemoteBrokerAgents,
+  remoteBrokerConnection,
   spawnCommand,
 } from './fleet.mjs';
 import { requestHerdr } from './herdr-socket.mjs';
@@ -21,7 +23,8 @@ function waitForChild(child) {
 
 export async function runFleetAgent({
   environment = process.env,
-  listAgents = listBrokerAgents,
+  listAgents,
+  listRemoteAgents = listRemoteBrokerAgents,
   request = requestHerdr,
   spawnProcess = spawn,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
@@ -35,17 +38,23 @@ export async function runFleetAgent({
 
   const projectDir = process.cwd();
   const mode = attachMode(environment.HERDR_RELAY_ATTACH_MODE);
+  const remoteConnection = remoteBrokerConnection(environment);
+  const loadAgents = listAgents
+    ? () => listAgents(projectDir)
+    : remoteConnection
+      ? () => listRemoteAgents(remoteConnection)
+      : () => listBrokerAgents(projectDir);
   const projector = createStatusProjector({
     agentName,
     initialBrokerState:
       environment.HERDR_RELAY_INITIAL_STATE === undefined
         ? undefined
         : environment.HERDR_RELAY_INITIAL_STATE,
-    loadAgents: () => listAgents(projectDir),
+    loadAgents,
     report: ({ state, message }) =>
       request(socketPath, 'pane.report_agent', {
         pane_id: paneId,
-        source: 'fleet-picker',
+        source: remoteConnection ? 'cloud-sandbox' : 'fleet-picker',
         agent: agentLabel,
         state,
         message,
